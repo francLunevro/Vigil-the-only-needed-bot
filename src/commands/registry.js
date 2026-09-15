@@ -17,6 +17,15 @@ const { executeRemindMe, executeReminders } = require('./reminder');
 // ── Giveaways ──
 const { executeGiveaway } = require('./giveaways');
 
+// ── Scheduled Posts ──
+const { executeSchedule } = require('./schedule');
+
+// ── Raid Mode ──
+const { executeRaidMode } = require('./raidMode');
+
+// ── Member Reports ──
+const { executeReport } = require('./report');
+
 // ── Server Stats ──
 const { executeServerStats } = require('./serverStats');
 
@@ -115,6 +124,9 @@ const commandRegistry = {
     track: executeTrack,
     poll: executePoll,
     announce: executeAnnounce,
+    schedule: executeSchedule,
+    raidmode: executeRaidMode,
+    report: executeReport,
 
     // Moderation
     kick: executeKick,

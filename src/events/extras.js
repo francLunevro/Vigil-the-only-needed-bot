@@ -1,4 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
+const { modActionLogEmbed } = require('../logging');
 
 // ─── Friendly names for thread types ───
 const THREAD_TYPES = { 10: 'News Thread', 11: 'Public Thread', 12: 'Private Thread' };
@@ -194,20 +195,15 @@ module.exports = [
         execute: (deps) => async (ban) => {
             if (!ban.guild) return;
             const executor = await deps.fetchAuditLogExecutor(ban.guild, 22, ban.user.id).catch(() => null);
-            const byUser = executor ? ' by ' + String(executor) : '';
-            const embed = new EmbedBuilder()
-                .setColor(0xE74C3C)
-                .setTitle('\uD83D\uDEAB Member Banned')
-                .setDescription(ban.user + ' was banned from the server' + (ban.reason ? '\nReason: ' + ban.reason : '') + byUser)
-                .addFields(
-                    { name: 'User', value: String(ban.user), inline: true },
-                    { name: 'Tag', value: ban.user.tag, inline: true },
-                    { name: 'ID', value: ban.user.id, inline: true },
-                )
-                .setThumbnail(ban.user.displayAvatarURL({ size: 64 }))
-                .setFooter({ text: ban.guild.name, iconURL: ban.guild.iconURL() })
-                .setTimestamp();
-            if (executor) embed.setAuthor({ name: executor.tag, iconURL: executor.displayAvatarURL() });
+            // Skip bans performed by this bot — the command/confirm handler
+            // already logged a Wick-style entry with the human moderator.
+            if (executor && ban.client && ban.client.user && executor.id === ban.client.user.id) return;
+            const embed = modActionLogEmbed({
+                verb: 'Ban', color: 0xE74C3C,
+                target: ban.user,
+                moderator: executor && !executor.bot ? executor : null,
+                reason: ban.reason,
+            });
             deps.sendLog(embed, 'bans', null, ban.guild.id);
         },
     },
@@ -217,20 +213,13 @@ module.exports = [
         execute: (deps) => async (ban) => {
             if (!ban.guild) return;
             const executor = await deps.fetchAuditLogExecutor(ban.guild, 23, ban.user.id).catch(() => null);
-            const byUser = executor ? ' by ' + String(executor) : '';
-            const embed = new EmbedBuilder()
-                .setColor(0x2ECC71)
-                .setTitle('\uD83D\uDEAB Member Unbanned')
-                .setDescription(ban.user + ' was unbanned from the server' + byUser)
-                .addFields(
-                    { name: 'User', value: String(ban.user), inline: true },
-                    { name: 'Tag', value: ban.user.tag, inline: true },
-                    { name: 'ID', value: ban.user.id, inline: true },
-                )
-                .setThumbnail(ban.user.displayAvatarURL({ size: 64 }))
-                .setFooter({ text: ban.guild.name, iconURL: ban.guild.iconURL() })
-                .setTimestamp();
-            if (executor) embed.setAuthor({ name: executor.tag, iconURL: executor.displayAvatarURL() });
+            // Skip unban performed by this bot — /unban logs its own entry.
+            if (executor && ban.client && ban.client.user && executor.id === ban.client.user.id) return;
+            const embed = modActionLogEmbed({
+                verb: 'Unban', color: 0x2ECC71,
+                target: ban.user,
+                moderator: executor && !executor.bot ? executor : null,
+            });
             deps.sendLog(embed, 'bans', null, ban.guild.id);
         },
     },

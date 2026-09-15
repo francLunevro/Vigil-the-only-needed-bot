@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { RULE_TYPES, getAutoModRules, updateAutoModRule, getAutoModFilters, addAutoModFilter, removeAutoModFilter } = require('../automod');
+const { RULE_TYPES, getAutoModRules, updateAutoModRule, getAutoModFilters, addAutoModFilter, removeAutoModFilter, isValidRegex } = require('../automod');
 
 async function executeAutoMod(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -67,6 +67,7 @@ async function executeAutoMod(interaction) {
             .setDescription(lines)
             .addFields({ name: 'Word Filters', value: String(getAutoModFilters(guild.id, 'words').length) + ' patterns' })
             .addFields({ name: 'Link Allowlist', value: String(getAutoModFilters(guild.id, 'links').length) + ' patterns' })
+            .addFields({ name: 'Regex Filters', value: String(getAutoModFilters(guild.id, 'regex').length) + ' patterns' })
             .setFooter({ text: 'Use /automod config <rule> to configure' })
             .setTimestamp();
 
@@ -90,6 +91,9 @@ async function executeAutoMod(interaction) {
             await interaction.reply({ embeds: [embed], ephemeral: true });
         } else {
             const action = interaction.options.getString('action') || 'delete';
+            if (filterType === 'regex' && !isValidRegex(pattern)) {
+                return interaction.reply({ content: '⚠️ `' + pattern + '` is not a valid regular expression. Check your syntax (e.g. `discord\\.gg`, `[A-Z]{5,}`).', ephemeral: true });
+            }
             addAutoModFilter(guild.id, filterType, pattern, action);
             const embed = new EmbedBuilder()
                 .setColor('Green')

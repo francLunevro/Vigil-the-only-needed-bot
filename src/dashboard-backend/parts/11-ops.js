@@ -290,32 +290,76 @@ function register(app, ctx) {
         try {
             const db = getDb();
             const tx = db.transaction(() => {
-                // Import all tables with conflict resolution
+                // Import all tables with conflict resolution. Each entry maps the
+                // table to the camelCase key /api/export/all emits, so a saved
+                // export round-trips through this endpoint (snake_case keys are
+                // still accepted for hand-built payloads).
                 const tables = [
-                    'guild_config', 'bot_config', 'permissions', 'reaction_roles', 'warnings',
-                    'mod_cases', 'mod_case_counters', 'ban_appeals', 'warning_thresholds',
-                    'automod_rules', 'automod_filters', 'automod_config', 'reminders', 'giveaways',
-                    'voice_presence', 'temp_vc_config', 'temp_vc_triggers', 'temp_vc_channels', 'temp_vc_panels',
-                    'ticket_config', 'ticket_panels', 'ticket_panel_types', 'tickets', 'ticket_messages',
-                    'ticket_ratings', 'ticket_blacklist', 'role_menus', 'role_menu_options',
-                    'guild_stats', 'stats_snapshots', 'activity_counts', 'message_log',
-                    'poll_votes', 'invite_tracking', 'invite_uses', 'staff_notes', 'temp_bans',
-                    'dash_config', 'dash_users', 'dash_user_guilds'
+                    { name: 'guild_config', alias: 'guildConfigs' },
+                    { name: 'bot_config', alias: 'botConfig' },
+                    { name: 'permissions', alias: 'permissions' },
+                    { name: 'reaction_roles', alias: 'reactionRoles' },
+                    { name: 'warnings', alias: 'warnings' },
+                    { name: 'mod_cases', alias: 'modCases' },
+                    { name: 'mod_case_counters', alias: 'modCaseCounters' },
+                    { name: 'ban_appeals', alias: 'banAppeals' },
+                    { name: 'warning_thresholds', alias: 'warningThresholds' },
+                    { name: 'automod_rules', alias: 'automodRules' },
+                    { name: 'automod_filters', alias: 'automodFilters' },
+                    { name: 'automod_config', alias: 'automodConfig' },
+                    { name: 'reminders', alias: 'reminders' },
+                    { name: 'giveaways', alias: 'giveaways' },
+                    { name: 'voice_presence', alias: 'voicePresence' },
+                    { name: 'temp_vc_config', alias: 'tempVcConfig' },
+                    { name: 'temp_vc_triggers', alias: 'tempVcTriggers' },
+                    { name: 'temp_vc_channels', alias: 'tempVcChannels' },
+                    { name: 'temp_vc_panels', alias: 'tempVcPanels' },
+                    { name: 'ticket_config', alias: 'ticketConfig' },
+                    { name: 'ticket_panels', alias: 'ticketPanels' },
+                    { name: 'ticket_panel_types', alias: 'ticketPanelTypes' },
+                    { name: 'tickets', alias: 'tickets' },
+                    { name: 'ticket_messages', alias: 'ticketMessages' },
+                    { name: 'ticket_ratings', alias: 'ticketRatings' },
+                    { name: 'ticket_blacklist', alias: 'ticketBlacklist' },
+                    { name: 'role_menus', alias: 'roleMenus' },
+                    { name: 'role_menu_options', alias: 'roleMenuOptions' },
+                    { name: 'guild_stats', alias: 'guildStats' },
+                    { name: 'stats_snapshots', alias: 'statsSnapshots' },
+                    { name: 'activity_counts', alias: 'activityCounts' },
+                    { name: 'message_log', alias: 'messageLog' },
+                    { name: 'poll_votes', alias: 'pollVotes' },
+                    { name: 'invite_tracking', alias: 'inviteTracking' },
+                    { name: 'invite_uses', alias: 'inviteUses' },
+                    { name: 'staff_notes', alias: 'staffNotes' },
+                    { name: 'temp_bans', alias: 'tempBans' },
+                    { name: 'dash_config', alias: 'dashConfig' },
+                    { name: 'dash_users', alias: 'dashUsers' },
+                    { name: 'dash_user_guilds', alias: 'dashUserGuilds' },
                 ];
-                for (const table of tables) {
-                    if (data[table] && Array.isArray(data[table])) {
-                        db.prepare(`DELETE FROM ${table}`).run();
-                        if (data[table].length > 0) {
-                            const cols = Object.keys(data[table][0]);
-                            const placeholders = cols.map(() => '?').join(',');
-                            const insert = db.prepare(`INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`);
-                            const tx2 = db.transaction((rows) => {
-                                for (const row of rows) {
-                                    insert.run(...cols.map(c => row[c]));
-                                }
-                            });
-                            tx2(data[table]);
-                        }
+                for (const { name, alias } of tables) {
+                    const rows = data[name] ?? data[alias];
+                    if (!rows || !Array.isArray(rows)) continue;
+                    db.prepare(`DELETE FROM ${name}`).run();
+                    if (rows.length > 0) {
+                        // Column names come from the import payload, so they must
+                        // never be interpolated as raw SQL. Quote every identifier
+                        // and drop any key that isn't a real column of this table —
+                        // a crafted key like `x) VALUES (1); --` becomes a harmless
+                        // (rejected) column instead of injected SQL.
+                        const realCols = new Set(
+                            db.prepare(`PRAGMA table_info(${name})`).all().map(r => r.name)
+                        );
+                        const cols = Object.keys(rows[0]).filter(c => realCols.has(c));
+                        if (cols.length === 0) continue;
+                        const quoted = cols.map(c => '"' + String(c).replace(/"/g, '""') + '"');
+                        const placeholders = cols.map(() => '?').join(',');
+                        const insert = db.prepare(`INSERT OR REPLACE INTO ${name} (${quoted.join(',')}) VALUES (${placeholders})`);
+                        const tx2 = db.transaction((batch) => {
+                            for (const row of batch) {
+                                insert.run(...cols.map(c => row[c]));
+                            }
+                        });
+                        tx2(rows);
                     }
                 }
             });

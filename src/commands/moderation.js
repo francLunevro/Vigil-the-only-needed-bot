@@ -3,6 +3,7 @@ const { formatDuration } = require('../helpers');
 const { addWarning, getWarnings, clearWarnings } = require('../warnings');
 const { createCase, closeCase } = require('../modCases');
 const { logError } = require('../logError');
+const { sendLog, modActionLogEmbed } = require('../logging');
 
 async function executeKick(interaction) {
     const target = interaction.options.getUser('user');
@@ -52,6 +53,7 @@ async function executeKick(interaction) {
 async function executeBan(interaction) {
     const target = interaction.options.getUser('user');
     const reason = interaction.options.getString('reason') || 'No reason provided';
+    const proof = interaction.options.getString('proof');
     const deleteMessages = interaction.options.getString('delete_messages') || 'none';
     const guild = interaction.guild;
 
@@ -81,6 +83,7 @@ async function executeBan(interaction) {
             { name: 'User', value: String(target), inline: true },
             { name: 'Reason', value: reason, inline: true },
             { name: 'Delete Messages', value: deleteMessages, inline: true },
+            ...(proof ? [{ name: 'Proof', value: proof }] : []),
         )
         .setFooter({ text: guild.name, iconURL: guild.iconURL() })
         .setTimestamp();
@@ -106,6 +109,7 @@ async function executeTempBan(interaction) {
     const target = interaction.options.getUser('user');
     const duration = interaction.options.getString('duration');
     const reason = interaction.options.getString('reason') || 'No reason provided';
+    const proof = interaction.options.getString('proof');
     const deleteMessages = interaction.options.getString('delete_messages') || 'none';
     const guild = interaction.guild;
 
@@ -143,6 +147,7 @@ async function executeTempBan(interaction) {
             { name: 'User', value: String(target), inline: true },
             { name: 'Duration', value: durationLabel, inline: true },
             { name: 'Reason', value: reason, inline: true },
+            ...(proof ? [{ name: 'Proof', value: proof }] : []),
         )
         .setFooter({ text: 'They will be auto-unbanned after ' + durationLabel })
         .setTimestamp();
@@ -174,6 +179,13 @@ async function executeUnban(interaction) {
 
     try {
         await guild.bans.remove(userId);
+        // Wick-style log entry in the bans log channel (event handler skips
+        // our own unban, so this is the single source of truth).
+        await sendLog(modActionLogEmbed({
+            verb: 'Unban', color: 0x2ECC71,
+            target: { id: userId },
+            moderator: interaction.user,
+        }), 'bans', null, guild.id);
         const embed = new EmbedBuilder()
             .setColor('Green')
             .setTitle('\uD83D\uDD13 Member Unbanned')
@@ -191,6 +203,7 @@ async function executeTimeout(interaction) {
     const target = interaction.options.getUser('user');
     const duration = interaction.options.getString('duration');
     const reason = interaction.options.getString('reason') || 'No reason provided';
+    const proof = interaction.options.getString('proof');
     const guild = interaction.guild;
     const member = await guild.members.fetch(target.id).catch(() => null);
 
@@ -222,6 +235,15 @@ async function executeTimeout(interaction) {
     try {
         await member.timeout(ms, reason);
         createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'timeout', reason);
+        // Wick-style log entry in the moderation log channel.
+        await sendLog(modActionLogEmbed({
+            verb: 'Mute', color: 0xE74C3C,
+            target,
+            moderator: interaction.user,
+            reason,
+            duration: formatDuration(ms),
+            proof,
+        }), 'moderation', null, guild.id);
         const embed = new EmbedBuilder()
             .setColor(0xF1C40F)
             .setTitle('\u23F1\uFE0F Member Timed Out')
@@ -262,6 +284,12 @@ async function executeUntimeout(interaction) {
         for (const tc of timeoutCases) {
             closeCase(guild.id, tc.case_number);
         }
+        // Wick-style log entry in the moderation log channel.
+        await sendLog(modActionLogEmbed({
+            verb: 'Unmute', color: 0x2ECC71,
+            target,
+            moderator: interaction.user,
+        }), 'moderation', null, guild.id);
         const embed = new EmbedBuilder()
             .setColor('Green')
             .setTitle('\u23F1\uFE0F Timeout Removed')
@@ -297,6 +325,14 @@ async function executeWarn(interaction) {
             .setTimestamp();
 
         createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'warn', reason);
+        // Wick-style log entry in the moderation log channel.
+        await sendLog(modActionLogEmbed({
+            verb: 'Warn', color: 0xF1C40F,
+            target,
+            moderator: interaction.user,
+            reason,
+            extraFields: [{ name: 'Warning Count', value: String(warnings.length) }],
+        }), 'moderation', null, guild.id);
         await interaction.reply({ embeds: [embed] });
 
         // Check warning thresholds for auto-punish

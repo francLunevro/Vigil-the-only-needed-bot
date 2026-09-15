@@ -3,6 +3,7 @@ const { logError } = require('../logError');
 const { getWelcomeConfig, getGoodbyeConfig } = require('../config');
 const { buildGreetingEmbed } = require('../commands/greetings');
 const { replacePlaceholders } = require('../helpers');
+const { handleRaidModeJoin } = require('../raidMode');
 
 // ─── Send custom welcome/goodbye message ───
 
@@ -37,6 +38,8 @@ async function sendGreeting(member, type) {
                 // ── Send welcome message ──
                 if (!isBot) {
                     await sendGreeting(member, 'welcome');
+                    // ── Raid mode: lockdown new joins ──
+                    await handleRaidModeJoin(member);
                 }
 
                 const daysSinceCreation = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);

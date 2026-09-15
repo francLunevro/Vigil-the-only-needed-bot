@@ -32,6 +32,7 @@ const roleEvents = require('./src/events/roles');
 const serverEvents = require('./src/events/server');
 const voiceEvents = require('./src/events/voice');
 const extraEvents = require('./src/events/extras');
+const automodEvents = require('./src/events/automod');
 
 // ──────────────────── Bot Setup ────────────────────
 
@@ -94,6 +95,7 @@ const allEvents = [
     ...serverEvents,
     ...voiceEvents,
     ...extraEvents,
+    ...automodEvents,
 ];
 
 for (const event of allEvents) {
@@ -196,6 +198,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 const { setReminderClient, startReminderChecker, stopReminderChecker } = require('./src/reminders');
 setReminderClient(client);
 
+// ──────────────────── Scheduled Post Client (poster starts post-login) ────────────────────
+const { setScheduledPostClient, startScheduledPoster, stopScheduledPoster } = require('./src/scheduledPosts');
+setScheduledPostClient(client);
+
 // ──────────────────── Start Web Dashboard ────────────────────
 
 const { createDashboard, setDashboardClient } = require('./src/dashboard');
@@ -222,6 +228,7 @@ function shutdown(signal) {
     stopTempVoice();
     stopTempBanSweeper();
     stopReminderChecker();
+    stopScheduledPoster();
     stopDataRetentionSweeper();
     closeDb();
     client.destroy();
@@ -301,6 +308,7 @@ client.login(process.env.BOT_TOKEN).then(() => {
     startServerStats(client);
     startTempBanSweeper();
     startReminderChecker();
+    startScheduledPoster();
     startDataRetentionSweeper();
     console.log('[Bot] Ticket inactivity, giveaway + server stats checks started.');
 }).catch(err => {

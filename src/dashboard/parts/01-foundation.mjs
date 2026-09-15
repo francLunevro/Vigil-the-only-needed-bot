@@ -135,6 +135,23 @@ function setBorderStrength(v){document.body.classList.remove('border-subtle','bo
 export function previewFont(v){setFont(v)}
 export function previewRadius(v){setRadiusScale(v)}
 export function previewBorder(v){setBorderStrength(v)}
+export function previewAnimPreset(v){
+  document.documentElement.style.setProperty('--anim-preset', v||'smooth');
+  const speeds={subtle:0.7,smooth:1,energetic:1.3};
+  document.documentElement.style.setProperty('--anim-speed', speeds[v]||1);
+}
+export function previewAnimSpeed(v){
+  const s=parseFloat(v);
+  if(!isNaN(s)) document.documentElement.style.setProperty('--anim-speed', s);
+}
+export function previewDensity(v){
+  const d=v==='compact'?'0.7':v==='comfortable'?'1.2':'1';
+  document.documentElement.style.setProperty('--layout-dense', d);
+  // Keep the Compact Mode toggle and its localStorage mirror in sync.
+  const ct=document.getElementById('compactToggle');
+  if(ct)ct.classList.toggle('on',v==='compact');
+  try{localStorage.setItem('layoutDensity',v==='compact'?'compact':'normal')}catch(e){}
+}
 export function initPalettes(){const g=document.getElementById('paletteGrid');if(!g)return;PALETTES.forEach(p=>{const b=document.createElement('button');b.className='pal-pick'+(p.id==='discord'?' active':'');b.dataset.pal=p.id;b.style.setProperty('--swatch',p.swatch);b.innerHTML='<span>'+p.name+'</span>';b.onclick=()=>applyPalette(p.id);g.appendChild(b)})}
 
 // ═══ BRANDING (logo + favicon) ═══
@@ -153,8 +170,9 @@ function applyCfg(c){
   if(c.title){document.getElementById('dashTitle').value=c.title;document.getElementById('dashTitlePg').textContent=c.title}
   if(c.refreshInterval){document.getElementById('dashRefresh').value=c.refreshInterval;rInt=c.refreshInterval;if(rTimer){clearInterval(rTimer);stRf()}}
   if(c.showWidgets)document.querySelectorAll('.tg').forEach(t=>{const w=t.dataset.w;if(w&&c.showWidgets[w]===false)t.classList.remove('on')});
+  applyWidgetVis();
   if(c.cardStyle){document.getElementById('dashCardStyle').value=c.cardStyle;document.querySelectorAll('.card').forEach(ca=>{ca.classList.toggle('card-solid',c.cardStyle==='solid');ca.classList.toggle('card-border',c.cardStyle==='border')})}
-  if(c.layoutDensity){document.getElementById('dashDensity').value=c.layoutDensity;document.documentElement.style.setProperty('--layout-dense',c.layoutDensity==='compact'?'0.7':c.layoutDensity==='comfortable'?'1.2':'1')}
+  if(c.layoutDensity){document.getElementById('dashDensity').value=c.layoutDensity;document.documentElement.style.setProperty('--layout-dense',c.layoutDensity==='compact'?'0.7':c.layoutDensity==='comfortable'?'1.2':'1');const ct=document.getElementById('compactToggle');if(ct)ct.classList.toggle('on',c.layoutDensity==='compact')}
   if(c.backgroundImage&&c.backgroundType==='url'){document.getElementById('dashBgUrl').value=c.backgroundImage;const bg=document.getElementById('bgOverlay');bg.style.backgroundImage='url('+c.backgroundImage+')';bg.className='bg-overlay active'+(c.backgroundBlur&&c.backgroundBlur!=='0'?' blur-'+c.backgroundBlur:'')}
   if(c.backgroundBlur)document.getElementById('dashBgBlur').value=c.backgroundBlur;
   if(c.backgroundType){document.getElementById('bgType').value=c.backgroundType;const t=c.backgroundType;document.getElementById('bgUrlWrap').style.display=t==='url'?'':'none';document.getElementById('bgUploadWrap').style.display=t==='upload'?'':'none'}
@@ -166,8 +184,8 @@ function applyCfg(c){
   if(c.botAvatarUrl){document.getElementById('dashAvatarUrl').value=c.botAvatarUrl}
   if(c.logoUrl!==undefined){document.getElementById('dashLogoUrl').value=c.logoUrl||'';applyLogo(c.logoUrl)}
   if(c.faviconUrl!==undefined){document.getElementById('dashFaviconUrl').value=c.faviconUrl||'';applyFavicon(c.faviconUrl)}
-  if(c.animationPreset){document.getElementById('dashAnimPreset').value=c.animationPreset;const speeds={subtle:0.7,smooth:1,energetic:1.3};const dur=speeds[c.animationPreset]||1;document.documentElement.style.setProperty('--anim-speed',dur)}
-  if(c.animationSpeed){document.getElementById('dashAnimSpeed').value=c.animationSpeed;document.documentElement.style.setProperty('--anim-speed',c.animationSpeed)}
+  if(c.animationPreset){document.getElementById('dashAnimPreset').value=c.animationPreset;previewAnimPreset(c.animationPreset)}
+  if(c.animationSpeed){document.getElementById('dashAnimSpeed').value=c.animationSpeed;previewAnimSpeed(c.animationSpeed)}
   if(c.cardGlow===false)document.querySelectorAll('.card').forEach(ca=>{ca.style.setProperty('--glow-int','0')});
   if(c.ambientLight===false)document.getElementById('ambient').style.display='none';else document.getElementById('ambient').style.display='';
   applyPalette(c.themePreset||'discord');
@@ -179,6 +197,12 @@ export function previewColor(h){const r=parseInt(h.slice(1,3),16),g=parseInt(h.s
 export function previewTitle(v){document.getElementById('dashTitlePg').textContent=v||'Overview'}
 function applyTheme(isDark){document.body.classList.toggle('light-mode',!isDark);darkMode=isDark;const lb=document.getElementById('themeLabel'),ti=document.getElementById('themeIcon'),tg=document.getElementById('themeToggle'),nti=document.getElementById('ntThemeIcon'),ntl=document.getElementById('ntMobileThemeLabel');if(lb)lb.textContent=isDark?'Light Mode':'Dark Mode';if(ti)ti.innerHTML=isDark?'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>':'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';if(tg)tg.classList.toggle('on',isDark);if(nti)nti.innerHTML=isDark?'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>':'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';if(ntl)ntl.textContent=isDark?'Light Mode':'Dark Mode'}
 export function toggleTheme(){applyTheme(!darkMode)}
+// ═══ SETTINGS TOGGLES THAT AFFECT THE PAGE LIVE ═══
+// "Show Section Labels" — hides nav labels via body.labels-off; mirrored in localStorage.
+export function applyLabelPref(){let off=false;try{off=localStorage.getItem('navLabels')==='off'}catch(e){}const t=document.getElementById('labelToggle');if(t)t.classList.toggle('on',!off);document.body.classList.toggle('labels-off',off)}
+export function toggleLabels(){const t=document.getElementById('labelToggle');if(!t)return;const off=!t.classList.contains('on');t.classList.toggle('on',!off);document.body.classList.toggle('labels-off',off);try{localStorage.setItem('navLabels',off?'off':'on')}catch(e){}}
+// "Visible Sections" — derives body.hide-w-* classes from the data-w toggles' state.
+export function applyWidgetVis(){const map={status:'hide-w-status',analytics:'hide-w-analytics',activity:'hide-w-activity',system:'hide-w-system'};document.querySelectorAll('.tg[data-w]').forEach(t=>{const cls=map[t.dataset.w];if(cls)document.body.classList.toggle(cls,!t.classList.contains('on'))})}
 export function toggleMobileMenu(){const menu=document.getElementById('notchMobileMenu'),btn=document.getElementById('notchMobileBtn');if(!menu||!btn)return;menu.classList.toggle('open');btn.querySelector('.notch-hamburger').style.display=menu.classList.contains('open')?'none':'';btn.querySelector('.notch-close').style.display=menu.classList.contains('open')?'':'none'}
 function applyPreset(idx){const t=THEMES[idx];previewColor(t.color);document.getElementById('themeGrid').querySelectorAll('.thm-pick').forEach((e,i)=>e.classList.toggle('active',i===idx))}
 export function toggleBgType(){const t=document.getElementById('bgType').value;document.getElementById('bgUrlWrap').style.display=t==='url'?'':'none';document.getElementById('bgUploadWrap').style.display=t==='upload'?'':'none'}

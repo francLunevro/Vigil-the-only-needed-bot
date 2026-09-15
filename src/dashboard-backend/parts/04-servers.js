@@ -372,6 +372,7 @@ function register(app, ctx) {
             reactionRoles: getReactionRoles(guild.id),
             permissions: getAllPermissions(guild.id),
             ownerId: guild.ownerId,
+            raidMode: require('../../raidMode').getRaidConfig(guild.id),
         });
     });
 

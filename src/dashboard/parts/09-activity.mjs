@@ -212,6 +212,106 @@ export async function updateBanAppealStatusUI(serverId, appealId, status) {
     } catch { showToast('Failed', true); }
 }
 
+// ═══ MEMBER REPORTS ═══
+export async function loadReports() {
+    const sel = document.getElementById('mrSrvSelect');
+    if (!sel) return;
+    if (sel.options.length <= 1 && allServers.length) {
+        sel.innerHTML = '<option value="">Select a server...</option>' + allServers.map(function (s) {
+            return '<option value="' + s.id + '"' + (curSrv === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+        }).join('');
+    }
+    const serverId = sel.value;
+    const cont = document.getElementById('memberReportsContent');
+    const statsCont = document.getElementById('mrStats');
+    if (!cont) return;
+
+    if (!serverId) {
+        cont.innerHTML = '<div class="empty"><p>Select a server to review member reports</p></div>';
+        updateRefreshTimestamp('member-reports');
+        return;
+    }
+
+    // Load stats
+    if (statsCont) {
+        try {
+            const r = await fetch('/api/server/' + serverId + '/reports/stats');
+            const stats = await r.json();
+            statsCont.innerHTML = `
+                <div class="card sr"><div class="lbl">Pending</div><div class="val">${stats.pending || 0}</div></div>
+                <div class="card sr"><div class="lbl">Approved</div><div class="val">${stats.approved || 0}</div></div>
+                <div class="card sr"><div class="lbl">Dismissed</div><div class="val">${stats.dismissed || 0}</div></div>
+                <div class="card sr"><div class="lbl">Total</div><div class="val">${stats.total || 0}</div></div>
+            `;
+        } catch { statsCont.innerHTML = ''; }
+    }
+
+    const statusFilter = document.getElementById('mrStatusFilter')?.value || '';
+    cont.innerHTML = '<div class="loading" style="padding:30px;text-align:center;"><div class="spin"></div></div>';
+
+    try {
+        const r = await fetch('/api/server/' + serverId + '/reports' + (statusFilter ? '?status=' + statusFilter : ''));
+        const d = await r.json();
+        const reports = d.reports || [];
+
+        var html = '';
+        if (!reports.length) {
+            html += '<div class="empty"><p>No reports found</p><p class="empty-act">Members can submit reports with /report.</p></div>';
+        } else {
+            html += reports.map(function (rep) {
+                var statusClass = rep.status === 'pending' ? '' : (rep.status === 'approved' ? 'style="color:#3ba55c"' : 'style="color:#ed4245"');
+                return '<div class="card" style="margin-bottom:8px;">' +
+                    '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">' +
+                    '<div style="flex:1;min-width:250px;">' +
+                    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">' +
+                    '<strong>' + esc(rep.target_tag) + '</strong>' +
+                    '<span class="sub">reported by ' + esc(rep.reporter_tag) + '</span>' +
+                    '<span ' + statusClass + '><strong>' + rep.status.toUpperCase() + '</strong></span>' +
+                    '<span class="sub">ID: ' + esc(rep.id) + ' · ' + timeSince(rep.created_at) + ' ago</span>' +
+                    '</div>' +
+                    '<div class="sub">Reason: ' + esc(rep.reason || 'None') + '</div>' +
+                    (rep.message_content ? '<div class="sub">Reported message: ' + esc(rep.message_content) + '</div>' : '') +
+                    (rep.message_id ? '<div class="sub">Message ID: ' + esc(rep.message_id) + '</div>' : '') +
+                    (rep.reviewed_by ? '<div class="sub">Reviewed by: ' + esc(rep.reviewed_by) + (rep.reviewed_at ? ' · ' + timeSince(rep.reviewed_at) : '') + '</div>' : '') +
+                    (rep.review_note ? '<div class="sub">Review note: ' + esc(rep.review_note) + '</div>' : '') +
+                    (rep.case_id ? '<div class="sub">Mod case: ' + esc(rep.case_id) + '</div>' : '') +
+                    '</div>' +
+                    (rep.status === 'pending' ? '<div style="display:flex;gap:8px;">' +
+                    '<button class="btn btn-s" data-fn="updateReportStatusUI" data-args=\'['+fnData(serverId)+','+fnData(rep.id)+',\"approved\"]\'>Approve</button>' +
+                    '<button class="btn btn-s" style="background:var(--danger)" data-fn="updateReportStatusUI" data-args=\'['+fnData(serverId)+','+fnData(rep.id)+',\"dismissed\"]\'>Dismiss</button>' +
+                    '<button class="btn btn-s" style="background:transparent;border:1px solid var(--border);" data-fn="deleteReportUI" data-args=\'['+fnData(serverId)+','+fnData(rep.id)+']\'>Delete</button>' +
+                    '</div>' : '') +
+                    '</div>';
+            }).join('');
+        }
+        cont.innerHTML = html;
+    } catch (e) {
+        cont.innerHTML = '<div class="empty"><p>Failed to load member reports</p></div>';
+    }
+    updateRefreshTimestamp('member-reports');
+}
+
+export async function updateReportStatusUI(serverId, reportId, status) {
+    const reviewNote = prompt('Enter review note (optional):') || null;
+    try {
+        const r = await fetch('/api/server/' + serverId + '/reports/' + reportId, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status, reviewedBy: 'Dashboard', reviewNote })
+        });
+        const d = await r.json();
+        if (d.success) { showToast('Report ' + status + '!'); loadReports(); } else showToast('Failed: ' + d.error, true);
+    } catch { showToast('Failed', true); }
+}
+
+export async function deleteReportUI(serverId, reportId) {
+    if (!confirm('Delete this report permanently?')) return;
+    try {
+        const r = await fetch('/api/server/' + serverId + '/reports/' + reportId, { method: 'DELETE' });
+        const d = await r.json();
+        if (d.success) { showToast('Report deleted'); loadReports(); } else showToast('Failed: ' + d.error, true);
+    } catch { showToast('Failed', true); }
+}
+
 // ═══ REMINDERS ═══
 async function loadReminders() {
     const cont = document.getElementById('remindersContent');

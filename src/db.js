@@ -571,6 +571,59 @@ function initSchema() {
             addColumnIfMissing('activity_counts', 'last_seen', 'INTEGER');
             db.prepare('UPDATE activity_counts SET last_seen = ? WHERE last_seen IS NULL').run(Date.now());
         } },
+        // Scheduled channel posts: recurring announcements the bot posts on a
+        // daily / weekly / interval schedule (see src/scheduledPosts.js).
+        { name: '0031_create_scheduled_posts', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS scheduled_posts (
+                id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                title TEXT,
+                content TEXT NOT NULL,
+                color TEXT,
+                schedule_type TEXT NOT NULL,
+                schedule_value TEXT NOT NULL,
+                next_run_at INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT,
+                created_at INTEGER NOT NULL
+            )`);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_posts_due ON scheduled_posts(enabled, next_run_at)');
+        } },
+        // Raid/lockdown mode: a per-guild toggle that auto-times-out new joins
+        // while active (see src/raidMode.js).
+        { name: '0032_create_raid_config', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS raid_config (
+                guild_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                duration_minutes INTEGER NOT NULL DEFAULT 60,
+                notice_channel TEXT,
+                started_at INTEGER
+            )`);
+        } },
+        // Member reports: members report others; staff review in the dashboard
+        // (see src/reports.js).
+        { name: '0033_create_reports', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                reporter_id TEXT NOT NULL,
+                reporter_tag TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                target_tag TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                message_content TEXT,
+                message_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at INTEGER NOT NULL,
+                reviewed_by TEXT,
+                reviewed_at INTEGER,
+                review_note TEXT,
+                case_id TEXT
+            )`);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_reports_guild ON reports(guild_id, status)');
+        } },
     ];
 
     for (const migration of MIGRATIONS) {

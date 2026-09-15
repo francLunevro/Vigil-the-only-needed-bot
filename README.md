@@ -377,6 +377,7 @@ All config lives in environment variables. Copy `.env.example` to `.env` and fil
 | `DASHBOARD_SESSION_HOURS` | `12` | Idle session TTL (hours) |
 | `DASHBOARD_SESSION_MAX_DAYS` | `7` | Absolute session cap (days) |
 | `LOG_LEVEL` | `info` | Log verbosity |
+| `TRUST_PROXY` | auto | Proxy trust for `X-Forwarded-For`/`X-Forwarded-Proto` — **unset**: honored only from local/private peers (same-host nginx, Docker, Railway, Discloud); `1`: honored from any peer (public proxy like Cloudflare); `0`: never honored (bare VPS, strictest) |
 
 ### Retired
 
@@ -534,7 +535,7 @@ node scripts/analyze-modules.mjs      # frontend module graph check
 
 The dashboard is the sensitive surface; it gets real treatment:
 
-- **Rate-limited login** — 10 attempts/min per IP, plus a global API rate limit
+- **Rate-limited login** — 10 attempts/min per IP, plus a global API rate limit. Rate limits key on the real client IP: `X-Forwarded-For` is only trusted from local/private proxy peers (see `TRUST_PROXY`), so a bare VPS deploy can't be bypassed by rotating the header
 - **Two login modes** — shared password, or per-user Discord-ID tokens granted via `/dashaccess` (tokens stored hashed, shown exactly once)
 - **Constant-time password comparison**; random session tokens; sessions die instantly when access is revoked
 - **Session hygiene** — HttpOnly + SameSite=Strict cookies, an idle TTL *and* an absolute cap; sliding renewal can't outlive the cap

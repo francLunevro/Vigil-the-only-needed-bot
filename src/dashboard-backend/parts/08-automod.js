@@ -14,6 +14,7 @@ const {
     exportAutoModConfig,
     importAutoModConfig,
     bulkAddFilters,
+    isValidRegex,
 } = require('../../automod');
 const { getClient } = require('../core');
 
@@ -30,6 +31,7 @@ function register(app, ctx) {
             const rules = getAutoModRules(guild.id);
             const wordFilters = getAutoModFilters(guild.id, 'words');
             const linkFilters = getAutoModFilters(guild.id, 'links');
+            const regexFilters = getAutoModFilters(guild.id, 'regex');
             const config = getAutoModConfig(guild.id);
             // Get all text channels for the channel picker
             const channels = guild.channels.cache
@@ -51,6 +53,7 @@ function register(app, ctx) {
                 filters: {
                     words: wordFilters.map(f => ({ pattern: f.pattern, action: f.action })),
                     links: linkFilters.map(f => ({ pattern: f.pattern, action: f.action })),
+                    regex: regexFilters.map(f => ({ pattern: f.pattern, action: f.action })),
                 },
                 channelSettings: {
                     includedChannels: config.includedChannels,
@@ -89,6 +92,9 @@ function register(app, ctx) {
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         const { filterType, pattern, action } = req.body;
         if (!filterType || !pattern) return res.status(400).json({ error: 'Missing filterType or pattern' });
+        if (filterType === 'regex' && !isValidRegex(pattern)) {
+            return res.status(400).json({ error: 'Invalid regular expression: ' + pattern });
+        }
         try {
             addAutoModFilter(guild.id, filterType, pattern, action || 'delete');
             res.json({ success: true });

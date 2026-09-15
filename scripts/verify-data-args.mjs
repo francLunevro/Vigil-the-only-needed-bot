@@ -1,7 +1,13 @@
 // Verification: every data-args value in the dashboard source must be either
 // static valid JSON (an array) or a correctly shaped runtime value — wrapped
-// in [ … ], every element a fnData(...) piece. Exits non-zero on any failure
-// so CI can run it.
+// in [ … ], every element a fnData(...) piece. Also runs dead-control checks:
+//   · every statically referenced data-fn must resolve to a window.<fn>
+//     assignment (the delegated dispatcher only finds window[fn]);
+//   · every toggle switch (.tg) in index.html must be clickable (data-fn
+//     ancestor) and have its state consumed — id'd toggles must be referenced
+//     in dashboard JS, data-w toggles must have a hide-w-<key> hook. Catches
+//     "renders but does nothing" controls like labelToggle was.
+// Exits non-zero on any failure so CI can run it.
 import fs from 'node:fs';
 
 const files = [
@@ -100,6 +106,83 @@ for (const file of files) {
         if (pieceOk && pieces.length) ok++;
         else fail(file, rawVal, 'malformed runtime element');
     }
+}
+
+// ──────────────────── dead-control checks ────────────────────
+
+const partFiles = fs.readdirSync('src/dashboard/parts').filter((f) => f.endsWith('.mjs')).map((f) => 'src/dashboard/parts/' + f);
+const jsSrc = partFiles.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+const cssSrc = fs.readFileSync('src/dashboard/dashboard.css', 'utf8');
+// Handlers reachable by the dispatcher = explicit window assignments. Names
+// starting with "_" are dispatcher built-ins (_seq, _hideSelf).
+const windowFns = new Set();
+for (const m of jsSrc.matchAll(/window\.([A-Za-z_$][\w$]*)\s*=/g)) windowFns.add(m[1]);
+const handlerKnown = (fn) => fn.startsWith('_') || windowFns.has(fn);
+
+// 1) Static data-fn references (static HTML + module-generated markup) must
+//    resolve. Template-built names (data-fn="'+x+'" / \'+fn+\') don't match
+//    the regex and are skipped; line comments are stripped so doc comments
+//    like data-fn="windowFn" can't false-positive.
+const fnRe = /data-fn="([A-Za-z_$][\w$]*)"/g;
+const checkedFns = new Set();
+for (const file of ['src/dashboard/index.html', ...partFiles]) {
+    const src = fs.readFileSync(file, 'utf8').replace(/^[ \t]*\/\/.*$/gm, '');
+    for (const m of src.matchAll(fnRe)) {
+        if (checkedFns.has(m[1])) continue;
+        checkedFns.add(m[1]);
+        if (!handlerKnown(m[1])) { bad++; console.log('DEAD ' + file + ' → data-fn="' + m[1] + '"  (no window.<fn> assignment — control does nothing when clicked)'); }
+    }
+}
+
+// 2) _seq steps in static HTML: [fnName, ...args] entries must reference
+//    known handlers. Static JSON args only; runtime junctions are skipped.
+{
+    const html = fs.readFileSync('src/dashboard/index.html', 'utf8');
+    for (const tm of html.matchAll(/<[a-zA-Z][^>]*>/g)) {
+        const tag = tm[0];
+        if (!tag.includes('data-fn="_seq"')) continue;
+        const am = tag.match(/data-args='([^']*)'/);
+        if (!am) continue;
+        let steps;
+        try { steps = JSON.parse(am[1].replace(/&#39;/g, "'")); } catch { continue; }
+        for (const step of steps) {
+            if (Array.isArray(step) && step.length > 0 && typeof step[0] === 'string' && !handlerKnown(step[0])) {
+                bad++; console.log('DEAD src/dashboard/index.html → _seq step ' + step[0] + '  (no window.<fn> assignment)');
+            }
+        }
+    }
+}
+
+// 3) Toggle switches in static HTML must have their state consumed.
+{
+    const html = fs.readFileSync('src/dashboard/index.html', 'utf8');
+    const tagRe = /<(\/)?([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+    const voidEls = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr', 'path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse', 'stop', 'use']);
+    const stack = [];
+    let toggles = 0;
+    for (const m of html.matchAll(tagRe)) {
+        const [, closing, name, attrStr, selfClose] = m;
+        if (closing) {
+            const i = stack.map((e) => e.name).lastIndexOf(name);
+            if (i >= 0) stack.length = i;
+            continue;
+        }
+        const attrs = {};
+        for (const am of attrStr.matchAll(/([a-zA-Z-]+)=(?:"([^"]*)"|'([^']*)')/g)) attrs[am[1]] = am[2] !== undefined ? am[2] : am[3];
+        if (!(selfClose === '/' || voidEls.has(name))) stack.push({ name, attrs });
+        const cls = (attrs.class || '').split(/\s+/);
+        if (!cls.includes('tg')) continue;
+        toggles++;
+        const label = (attrs.id ? ' #' + attrs.id : '') + (attrs['data-w'] ? ' [data-w=' + attrs['data-w'] + ']' : '');
+        if (!stack.some((e) => e.attrs['data-fn'])) { bad++; console.log('DEAD src/dashboard/index.html → toggle' + label + '  (no data-fn on any ancestor — not clickable)'); }
+        if (attrs.id && !jsSrc.includes("'" + attrs.id + "'") && !jsSrc.includes('"' + attrs.id + '"')) {
+            bad++; console.log('DEAD src/dashboard/index.html → toggle #' + attrs.id + '  (id never referenced in dashboard JS — state read/applied nowhere)');
+        }
+        if (attrs['data-w'] && !(jsSrc + cssSrc).includes('hide-w-' + attrs['data-w'])) {
+            bad++; console.log('DEAD src/dashboard/index.html → toggle [data-w=' + attrs['data-w'] + ']  (no hide-w-<key> consumer in JS or CSS — visibility never applied)');
+        }
+    }
+    console.log('toggles: ' + toggles + ' checked');
 }
 
 console.log('\nOK: ' + ok + '  BAD: ' + bad);

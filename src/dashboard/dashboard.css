@@ -234,7 +234,7 @@ body.light-mode .srv-search select,.light-mode .stg select{background-size:12px!
 .bck svg{width:14px;height:14px}
 
 /* Table */
-.tw{background:var(--surface);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:var(--radius);overflow:hidden;margin-bottom:16px;border:1px solid var(--border);transition:border-color 0.2s}
+.tw{background:var(--surface);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:var(--radius);overflow:hidden;margin-bottom:calc(16px * var(--layout-dense,1));border:1px solid var(--border);transition:border-color 0.2s}
 .tw:hover{border-color:var(--border-hover);background:rgba(255,255,255,0.06)}
 .tw-h{padding:12px 18px;font-size:12px;font-weight:600;color:var(--text);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
 .tw-h svg{width:14px;height:14px;opacity:0.5}
@@ -265,7 +265,7 @@ code{background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;font-si
 .chart-area svg{position:absolute;top:0;left:0;width:100%;height:100%}
 
 /* Settings */
-.stg{margin-bottom:18px}
+.stg{margin-bottom:calc(18px * var(--layout-dense,1))}
 .stg>label{display:block;font-size:11px;font-weight:600;color:var(--text);margin-bottom:6px}
 .stg-inl{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .stg input[type="color"]{width:38px;height:38px;border:2px solid var(--border);border-radius:8px;cursor:pointer;background:rgba(255,255,255,0.04);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:2px}
@@ -435,7 +435,10 @@ body.light-mode .grp-h{color:#1a1a2e!important}
 
 /* ═══ Look Switcher ═══ */
 #lookGrid{display:flex;gap:8px;flex-wrap:wrap}
-#lookGrid .bg-style-opt{display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);font-size:12px;cursor:pointer;transition:all 0.15s;font-family:inherit}
+/* Background-effect presets also carry a name label; give them a wide
+   rounded-rect instead of the system layer's 44px circle so the label fits. */
+.bg-style-grid .bg-style-opt{width:100%;height:auto;border-radius:10px}
+#lookGrid .bg-style-opt{display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);font-size:12px;cursor:pointer;transition:all 0.15s;font-family:inherit;width:auto;height:auto;min-width:0}
 #lookGrid .bg-style-opt:hover{background:rgba(255,255,255,0.07);color:var(--text)}
 #lookGrid .bg-style-opt.active{background:rgba(var(--accent-rgb),0.1);color:var(--accent);border-color:rgba(var(--accent-rgb),0.2)}
 #lookGrid .bg-style-opt svg{width:16px;height:16px}
@@ -818,6 +821,10 @@ body.light-mode.border-strong{--border:rgba(0,0,0,0.18)!important;--border-hover
 .pal-pick span{font-size:9px;font-weight:600;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,0.9);padding-bottom:5px;letter-spacing:0.3px}
 .pal-pick:hover{transform:translateY(-2px)}
 .pal-pick.active{border-color:#fff;box-shadow:0 0 0 3px rgba(var(--accent-rgb),0.35)}
+/* Palette swatches carry a name label, so they need a wide rounded-rect
+   instead of the 44px circle from the system layer (which clipped long
+   names like "Discord" at the bottom edge). */
+.pal-grid .pal-pick{width:100%;height:52px;border-radius:12px}
 
 /* ═══ COMMAND PALETTE (Ctrl+K) ═══ */
 .cmd-palette-ov{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);backdrop-filter:blur(4px);display:none;align-items:flex-start;justify-content:center;padding-top:14vh}
@@ -853,8 +860,8 @@ h1,h2,h3,.tw-h,.stg>label,.tg-lbl{letter-spacing:-0.015em}
 .card,.tw,.srv-card,.card-stat,.act-item,.rmd,.err-item,.du-row{background:rgba(255,255,255,0.03);border:none;border-radius:var(--radius);box-shadow:var(--hairline),var(--shadow-card);backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);padding:24px;transition:transform .3s var(--ease-apple),box-shadow .3s var(--ease-apple),background .3s var(--ease-apple)}
 .tw-h{padding:16px 20px;border-bottom:1px solid rgba(255,255,255,0.05);background:transparent}
 .card:hover,.tw:hover{transform:translateY(-2px);background:rgba(255,255,255,0.05);box-shadow:var(--hairline),0 28px 56px -12px rgba(0,0,0,0.6)}
-.card-solid{background:rgba(255,255,255,0.05)!important}
-.card-border{background:rgba(255,255,255,0.02)!important}
+.card-solid{background:rgba(255,255,255,0.05)}
+.card-border{background:rgba(255,255,255,0.02);border:1.5px solid var(--border)}
 
 /* ── Controls: recessed wells ── */
 input,select,textarea{background:rgba(255,255,255,0.02)!important;border:1px solid rgba(255,255,255,0.07)!important;border-radius:var(--radius-xs)!important;box-shadow:inset 0 1px 2px rgba(0,0,0,0.5);color:var(--text)!important;transition:border-color .3s var(--ease-apple),box-shadow .3s var(--ease-apple)}
@@ -877,12 +884,11 @@ select option{background:#0d0d0f;color:#fff}
 @keyframes pulseGlow{0%,100%{box-shadow:0 0 8px rgba(48,209,88,0.12)}50%{box-shadow:0 0 18px rgba(48,209,88,0.28)}}
 
 /* ── Theme swatches → floating glass chips ── */
-.thm-pick,.pal-pick,.bg-style-opt{width:44px;height:44px;border-radius:50%;border:2px solid transparent;box-shadow:var(--hairline);transition:all .3s var(--ease-apple)}
-.pal-pick{height:52px;width:52px}
-.pal-pick span{opacity:0;padding:0}
-.pal-pick:hover span,.pal-pick.active span{opacity:1}
-.bg-style-opt{border-radius:var(--radius-sm);min-height:52px}
-.thm-pick.active,.pal-pick.active{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,0.15),var(--shadow-card);transform:scale(1.06)}
+/* Circle chip treatment applies ONLY to .thm-pick (plain color dots).
+   .pal-pick and .bg-style-opt keep their grid-card designs above —
+   forcing them into 44px circles cropped their text labels. */
+.thm-pick{width:44px;height:44px;border-radius:50%;border:2px solid transparent;box-shadow:var(--hairline);transition:all .3s var(--ease-apple)}
+.thm-pick.active,.pal-pick.active{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,0.15),var(--shadow-card)}
 
 /* ── Toggles ── */
 .tg{background:rgba(255,255,255,0.12)}
@@ -1063,3 +1069,12 @@ body.light-mode .login-card{background:rgba(255,255,255,0.88)!important;border-c
 body.light-mode .ft{color:rgba(15,20,40,0.35)!important}
 .login-footnote{position:fixed;bottom:14px;left:0;right:0;text-align:center;font-size:10px;letter-spacing:0.4px;color:rgba(255,255,255,0.1);z-index:1}
 body.light-mode .login-footnote{color:rgba(15,20,40,0.22)}
+
+/* ═══ SETTINGS-TOGGLE WIRING (must stay last — these override the glass/redesign layer) ═══ */
+/* "Show Section Labels" toggle — body.labels-off beats .notch-link span's ≥1280px display:inline */
+body.labels-off .notch-link span{display:none}
+/* "Visible Sections" toggles — ID specificity beats .section.active{display:block} */
+body.hide-w-status #ovCards,body.hide-w-status #ovStatusCards{display:none}
+body.hide-w-analytics #sec-analytics,body.hide-w-analytics .notch-link[data-sec="analytics"]{display:none}
+body.hide-w-activity #sec-activity,body.hide-w-activity .notch-link[data-sec="activity"]{display:none}
+body.hide-w-system #sec-system,body.hide-w-system .nd-item[data-sec="system"]{display:none}

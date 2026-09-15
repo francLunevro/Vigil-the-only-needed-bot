@@ -11,6 +11,16 @@ const { EmbedBuilder } = require('discord.js');
 
 const RULE_TYPES = ['spam', 'mentions', 'words', 'links', 'caps'];
 const ACTIONS = ['warn', 'delete', 'timeout', 'kick'];
+const FILTER_TYPES = ['words', 'links', 'regex'];
+
+// Regex filters run under the 'words' rule toggle (they're text filters), but
+// they must never be lowercased at add-time — that would destroy patterns like
+// `[A-Z]`. Syntax is validated on add so a bad pattern can't silently never
+// match (and checkMessage guards at match-time as a second line of defense).
+function isValidRegex(pattern) {
+    try { new RegExp(pattern); return true; }
+    catch { return false; }
+}
 
 const DEFAULT_RULES = {
     spam:      { enabled: false, threshold: 5, time_window: 10, action: 'warn', duration: null },
@@ -113,14 +123,18 @@ function getAutoModFilters(guildId, filterType) {
 
 function addAutoModFilter(guildId, filterType, pattern, action) {
     const db = getDb();
+    const stored = filterType === 'regex' ? pattern : pattern.toLowerCase();
     db.prepare('INSERT OR REPLACE INTO automod_filters (guild_id, filter_type, pattern, action) VALUES (?, ?, ?, ?)')
-        .run(guildId, filterType, pattern.toLowerCase(), action || 'delete');
+        .run(guildId, filterType, stored, action || 'delete');
 }
 
 function removeAutoModFilter(guildId, filterType, pattern) {
     const db = getDb();
+    // Regex patterns are stored verbatim (case-sensitive), so don't lowercase
+    // them — doing so made removing e.g. `[A-Z]{5,}` a silent no-op.
+    const stored = filterType === 'regex' ? pattern : pattern.toLowerCase();
     const result = db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ? AND pattern = ?')
-        .run(guildId, filterType, pattern.toLowerCase());
+        .run(guildId, filterType, stored);
     return result.changes > 0;
 }
 
@@ -225,6 +239,17 @@ async function checkMessage(message, guildId) {
                 break;
             }
         }
+
+        // ── Regex filter check (same words-rule toggle) ──
+        const regexFilters = getAutoModFilters(guildId, 'regex');
+        for (const f of regexFilters) {
+            try {
+                if (new RegExp(f.pattern).test(content)) {
+                    violations.push({ type: 'regex', rule: { ...rules.words, action: f.action }, reason: 'Regex match: /' + f.pattern + '/' });
+                    break;
+                }
+            } catch { /* stored pattern is invalid — validated at add-time, skip defensively */ }
+        }
     }
 
     // ── Link check ──
@@ -313,6 +338,7 @@ function exportAutoModConfig(guildId) {
     const rules = getAutoModRules(guildId);
     const wordFilters = getAutoModFilters(guildId, 'words');
     const linkFilters = getAutoModFilters(guildId, 'links');
+    const regexFilters = getAutoModFilters(guildId, 'regex');
     const config = getAutoModConfig(guildId);
     return {
         exportedAt: Date.now(),
@@ -321,6 +347,7 @@ function exportAutoModConfig(guildId) {
         filters: {
             words: wordFilters.map(f => ({ pattern: f.pattern, action: f.action })),
             links: linkFilters.map(f => ({ pattern: f.pattern, action: f.action })),
+            regex: regexFilters.map(f => ({ pattern: f.pattern, action: f.action })),
         },
         channelSettings: {
             includedChannels: config.includedChannels,
@@ -356,6 +383,12 @@ function importAutoModConfig(guildId, data) {
                     if (f.pattern) addAutoModFilter(guildId, 'links', f.pattern, f.action || 'delete');
                 }
             }
+            if (Array.isArray(data.filters.regex)) {
+                db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ?').run(guildId, 'regex');
+                for (const f of data.filters.regex) {
+                    if (f.pattern && isValidRegex(f.pattern)) addAutoModFilter(guildId, 'regex', f.pattern, f.action || 'delete');
+                }
+            }
         }
         // Import channel/role settings
         if (data.channelSettings) {
@@ -373,12 +406,17 @@ function bulkAddFilters(guildId, filterType, patterns) {
     for (const item of items) {
         // An item can be "word" or "word:action"
         const parts = item.split(':');
-        const pattern = parts[0].trim().toLowerCase();
+        let pattern = parts[0].trim();
         const action = parts[1]?.trim() || 'delete';
-        if (pattern && ACTIONS.includes(action)) {
-            addAutoModFilter(guildId, filterType, pattern, action);
-            added.push({ pattern, action });
+        if (!pattern || !ACTIONS.includes(action)) continue;
+        // Regex patterns keep their case and must be syntactically valid
+        if (filterType === 'regex') {
+            if (!isValidRegex(pattern)) continue;
+        } else {
+            pattern = pattern.toLowerCase();
         }
+        addAutoModFilter(guildId, filterType, pattern, action);
+        added.push({ pattern, action });
     }
     return added;
 }
@@ -386,6 +424,8 @@ function bulkAddFilters(guildId, filterType, patterns) {
 module.exports = {
     RULE_TYPES,
     ACTIONS,
+    FILTER_TYPES,
+    isValidRegex,
     getAutoModRules,
     updateAutoModRule,
     getAutoModFilters,

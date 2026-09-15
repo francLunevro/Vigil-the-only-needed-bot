@@ -6,6 +6,9 @@
 const { getDb } = require('../../db');
 const { getThresholds, addThreshold, removeThreshold, DEFAULT_ACTIONS } = require('../../warningThresholds');
 const { createBanAppeal, getBanAppeals, updateBanAppealStatus, deleteBanAppeal, getBanAppealCount } = require('../../banAppeals');
+const { getReports, getReport, updateReportStatus, deleteReport, getReportCount } = require('../../reports');
+const { getCases } = require('../../modCases');
+const { sendLog, modActionLogEmbed, userStatsValue } = require('../../logging');
 const { logError } = require('../../logError');
 const { sanitizeForDB } = require('../../helpers');
 const { getClient } = require('../core');
@@ -279,6 +282,90 @@ function register(app, ctx) {
         }
     });
 
+    // ── Member Reports API ──
+    app.get('/api/server/:id/reports', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        const status = req.query.status || null;
+        try {
+            const reports = getReports(guild.id, status);
+            res.json({ reports });
+        } catch { res.json({ reports: [] }); }
+    });
+
+    app.get('/api/server/:id/reports/stats', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            const stats = {
+                pending: getReportCount(guild.id, 'pending'),
+                approved: getReportCount(guild.id, 'approved'),
+                dismissed: getReportCount(guild.id, 'dismissed'),
+                total: getReportCount(guild.id),
+            };
+            res.json(stats);
+        } catch { res.json({ pending: 0, approved: 0, dismissed: 0, total: 0 }); }
+    });
+
+    app.put('/api/server/:id/reports/:reportId', requireAuth, async (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        const { status, reviewedBy, reviewNote, caseId } = req.body;
+        if (!status) return res.status(400).json({ error: 'Missing status' });
+        try {
+            const report = getReport(req.params.reportId);
+            const result = updateReportStatus(req.params.reportId, status, reviewedBy || 'Dashboard', reviewNote, caseId);
+            if (!result) return res.status(404).json({ error: 'Report not found' });
+            res.json({ success: true });
+            // Wick-style log entry announcing the review outcome (best-effort).
+            try {
+                const approved = status === 'approved';
+                const target = await client.users.fetch(report.target_id).catch(() => null);
+                const member = await guild.members.fetch(report.target_id).catch(() => null);
+                const lastCase = getCases(guild.id, report.target_id, 1)[0] || null;
+                const embed = modActionLogEmbed({
+                    title: approved ? '✅ Report accepted' : '🔕 Report dismissed',
+                    color: approved ? 0x2ECC71 : 0x95A5A6,
+                    target,
+                    footerText: (reviewedBy || 'Dashboard') + (approved ? ' accepted this report' : ' dismissed this report'),
+                    fields: [
+                        { name: 'User', value: userStatsValue({ user: target, member, lastCase }) },
+                        { name: 'Reason(s)', value: (report.reason || '—').slice(0, 1000) },
+                        ...(report.message_content ? [{ name: 'Highlighted message(s)', value: report.message_content.slice(0, 1000) }] : []),
+                        { name: 'Reported by', value: report.reporter_tag + ' (<@' + report.reporter_id + '>)' },
+                    ],
+                });
+                await sendLog(embed, 'moderation', null, guild.id);
+            } catch (logErr) {
+                logError(logErr, 'dashboard', 'report_update_log');
+            }
+        } catch (err) {
+            logError(err, 'dashboard', 'report_update');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.delete('/api/server/:id/reports/:reportId', requireAuth, async (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            const result = deleteReport(req.params.reportId);
+            if (!result) return res.status(404).json({ error: 'Report not found' });
+            res.json({ success: true });
+        } catch (err) {
+            logError(err, 'dashboard', 'report_delete');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
     // ── Server Insights: Moderation Stats ──
     app.get('/api/server/:id/modstats', requireAuth, async (req, res) => {
         const client = getClient();
@@ -343,6 +430,72 @@ function register(app, ctx) {
             attachments: r.attachments ? JSON.parse(r.attachments) : null,
             loggedAt: r.logged_at,
         })));
+    });
+
+    // ── Message Log CSV Export ──
+    app.get('/api/server/:id/messages/export', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        const db = getDb();
+        const limit = Math.min(parseInt(req.query.limit) || 1000, 5000);
+        const search = req.query.q || null;
+        const action = req.query.action || null;
+        const channel = req.query.channel || null;
+        const userId = req.query.userId || null;
+
+        const clauses = ['guild_id = ?'];
+        const params = [guild.id];
+        if (search) { clauses.push('content LIKE ?'); params.push('%' + search + '%'); }
+        if (action) { clauses.push('action = ?'); params.push(action); }
+        if (channel) { clauses.push('channel_id = ?'); params.push(channel); }
+        if (userId) { clauses.push('author_id = ?'); params.push(userId); }
+
+        let rows;
+        try {
+            rows = db.prepare('SELECT * FROM message_log WHERE ' + clauses.join(' AND ') + ' ORDER BY logged_at DESC LIMIT ?').all(...params, limit);
+        } catch (err) {
+            return res.status(500).json({ error: err.message });
+        }
+
+        const csv = messageLogToCsv(rows, guild);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="message-log-' + guild.id + '-' + stamp + '.csv"');
+        res.send(csv);
+    });
+
+    // ── Raid / Lockdown Mode ──
+    app.get('/api/server/:id/raidmode', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            const raid = require('../../raidMode');
+            res.json({ raidMode: raid.getRaidConfig(guild.id) });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/server/:id/raidmode', requireAuth, async (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            const raid = require('../../raidMode');
+            const { enabled, durationMinutes, noticeChannel } = req.body;
+            if (enabled === undefined) return res.status(400).json({ error: 'Missing enabled flag' });
+            const cfg = enabled
+                ? await raid.enableRaidMode(guild, { durationMinutes, noticeChannel })
+                : await raid.disableRaidMode(guild);
+            res.json({ success: true, raidMode: cfg });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
     });
 
     // Helper for audit log icons
@@ -517,6 +670,40 @@ function register(app, ctx) {
         entries.sort((a, b) => b.timestamp - a.timestamp);
         res.json(entries.slice(0, limit));
     });
+}
+
+// RFC 4180-style CSV escaping: wrap a field in quotes if it contains a comma,
+// quote, or newline, and double any embedded quotes.
+function csvEscape(value) {
+    const s = value === null || value === undefined ? '' : String(value);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function messageLogToCsv(rows, guild) {
+    const header = ['id', 'timestamp', 'channel', 'author_tag', 'author_id', 'action', 'content', 'attachments'];
+    const lines = [header.join(',')];
+    for (const r of rows) {
+        const channelName = guild.channels.cache.get(r.channel_id)?.name || r.channel_id;
+        let attachments = '';
+        if (r.attachments) {
+            try {
+                const list = JSON.parse(r.attachments);
+                attachments = Array.isArray(list) ? list.map(a => (typeof a === 'string' ? a : a.url || '')).join(' ') : String(list);
+            } catch { attachments = String(r.attachments); }
+        }
+        const cells = [
+            r.id,
+            new Date(r.logged_at).toISOString(),
+            channelName,
+            r.author_tag,
+            r.author_id,
+            r.action,
+            r.content,
+            attachments,
+        ];
+        lines.push(cells.map(csvEscape).join(','));
+    }
+    return lines.join('\r\n') + '\r\n';
 }
 
 module.exports = { register };

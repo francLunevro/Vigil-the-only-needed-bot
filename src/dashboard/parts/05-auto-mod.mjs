@@ -81,6 +81,12 @@ export async function loadAutomod(){
       return '<div class="am-f-item"><span class="am-f-pat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:10px;height:10px;"><polyline points="20 6 9 17 4 12"/></svg>'+esc(f.pattern)+'</span><span class="am-f-act" style="color:#3b82f6;">allowlist</span><button class="am-f-del" data-fn="deleteAMFilter" data-args=\'['+fnData(serverId)+',\"links\",'+fnData(encodeURIComponent(f.pattern))+']\'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
     }).join(''):'<div class="am-f-empty">No allowed domains configured. Add domains below.</div>';
 
+    var regexHtml=filters.regex&&filters.regex.length?filters.regex.map(function(f,i){
+      var ac=f.action||'delete';
+      var acColor=ac==='warn'?'#f59e0b':ac==='delete'?'#ef4444':ac==='timeout'?'#8b5cf6':'#3b82f6';
+      return '<div class="am-f-item"><span class="am-f-pat" style="font-family:monospace;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:10px;height:10px;"><polyline points="20 6 9 17 4 12"/></svg>'+esc(f.pattern)+'</span><span class="am-f-act" style="color:'+acColor+'">'+ac+'</span><button class="am-f-del" data-fn="deleteAMFilter" data-args=\'['+fnData(serverId)+',\"regex\",'+fnData(encodeURIComponent(f.pattern))+']\'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>';
+    }).join(''):'<div class="am-f-empty">No regex patterns configured. Add patterns below.</div>';
+
     // Build channel settings
     function chkCh(id,list){return list.indexOf(id)!==-1;}
     function chkRole(id,list){return list.indexOf(id)!==-1;}
@@ -107,6 +113,9 @@ export async function loadAutomod(){
           '<div class="am-f-add" style="margin-top:4px;"><input type="text" id="amWordBulk" placeholder="word1:delete, word2:warn, word3:timeout" style="flex:1;font-size:10px;"><button class="btn btn-s" data-fn="bulkAMFilter" data-args=\'['+fnData(serverId)+',\"words\"]\' style="padding:5px 10px;font-size:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:10px;height:10px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Bulk Import</button>'+
             '<input type="file" id="amTxtUpload" accept=".txt" style="display:none;" data-fn="uploadTxtFilter" data-args=\'['+fnData(serverId)+',\"@el\"]\'>'+
             '<button class="btn btn-s" data-fn="amTxtUploadClick" style="padding:5px 10px;font-size:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:10px;height:10px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> .txt File</button></div>'+
+          '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border);"><div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:11px;height:11px;vertical-align:middle;margin-right:4px;"><polyline points="20 6 9 17 4 12"/></svg>Regex patterns <span style="opacity:.6;">(case-sensitive, e.g. discord\\.gg)</span></div>'+
+            '<div class="am-f-list">'+regexHtml+'</div>'+
+            '<div class="am-f-add"><input type="text" id="amRegexInput" placeholder="discord\\.gg|bit\\.ly/" style="flex:1;font-family:monospace;" data-fn="addAMFilter" data-args=\'['+fnData(serverId)+',\"regex\"]\'><button class="btn btn-s" data-fn="addAMFilter" data-args=\'['+fnData(serverId)+',\"regex\"]\' style="padding:7px 12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:12px;height:12px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div></div>'+
         '</div></div>'+
       // Link allowlist panel
       '<div class="tw sr"><div class="tw-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>Link Allowlist</div>'+
@@ -180,13 +189,14 @@ export async function saveAMRule(key){
   }catch{showToast('Failed to save',true)}
 }
 export async function addAMFilter(serverId,type){
-  var input=document.getElementById(type==='words'?'amWordInput':'amLinkInput');
+  var input=document.getElementById(type==='words'?'amWordInput':type==='regex'?'amRegexInput':'amLinkInput');
   if(!input||!input.value.trim())return;
-  var pattern=input.value.trim().toLowerCase();
+  var pattern=input.value.trim();
+  if(type!=='regex')pattern=pattern.toLowerCase();
   try{
     var r=await fetch('/api/server/'+serverId+'/automod/filters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filterType:type,pattern:pattern,action:'delete'})});
     var d=await r.json();
-    if(d.success){input.value='';showToast('Filter added!');loadAutomod()}else showToast('Failed',true);
+    if(d.success){input.value='';showToast('Filter added!');loadAutomod()}else showToast(d.error||'Failed',true);
   }catch{showToast('Failed',true)}
 }
 export async function deleteAMFilter(serverId,type,pattern){

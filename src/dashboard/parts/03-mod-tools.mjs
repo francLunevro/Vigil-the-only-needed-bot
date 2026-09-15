@@ -351,6 +351,10 @@ export function toggleCompact(){
   var on=!t.classList.contains('on');
   t.classList.toggle('on',on);
   document.documentElement.style.setProperty('--layout-dense',on?'0.7':'1');
+  // Keep the Layout Density dropdown in sync so "Save All Settings"
+  // persists the toggle to the server config.
+  var dd=document.getElementById('dashDensity');
+  if(dd)dd.value=on?'compact':'normal';
   try{localStorage.setItem('layoutDensity',on?'compact':'normal')}catch(e){}
 }
 export function applyCompactPref(){
@@ -359,5 +363,7 @@ export function applyCompactPref(){
   var t=document.getElementById('compactToggle');
   if(t)t.classList.toggle('on',pref==='compact');
   document.documentElement.style.setProperty('--layout-dense',pref==='compact'?'0.7':'1');
+  var dd=document.getElementById('dashDensity');
+  if(dd)dd.value=pref==='compact'?'compact':'normal';
 }
 

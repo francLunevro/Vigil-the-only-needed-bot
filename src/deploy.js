@@ -246,7 +246,12 @@ const commandDefs = [
                     { name: 'Past hour', value: 'hour' },
                     { name: 'Past 6 hours', value: '6hours' },
                     { name: 'Past 24 hours', value: '24hours' },
-                )),
+                ))
+        .addStringOption(opt =>
+            opt.setName('proof')
+                .setDescription('Optional proof / evidence shown in the mod log')
+                .setRequired(false)
+                .setMaxLength(1000)),
     new SlashCommandBuilder()
         .setName('tempban')
         .setDescription('Temporarily ban a member (auto-unbans after duration)')
@@ -280,7 +285,12 @@ const commandDefs = [
                     { name: 'Past hour', value: 'hour' },
                     { name: 'Past 6 hours', value: '6hours' },
                     { name: 'Past 24 hours', value: '24hours' },
-                )),
+                ))
+        .addStringOption(opt =>
+            opt.setName('proof')
+                .setDescription('Optional proof / evidence shown in the mod log')
+                .setRequired(false)
+                .setMaxLength(1000)),
     new SlashCommandBuilder()
         .setName('unban')
         .setDescription('Unban a user by their ID')
@@ -312,7 +322,12 @@ const commandDefs = [
         .addStringOption(opt =>
             opt.setName('reason')
                 .setDescription('Reason for the timeout')
-                .setRequired(false)),
+                .setRequired(false))
+        .addStringOption(opt =>
+            opt.setName('proof')
+                .setDescription('Optional proof / evidence shown in the mod log')
+                .setRequired(false)
+                .setMaxLength(1000)),
     new SlashCommandBuilder()
         .setName('untimeout')
         .setDescription('Remove a timeout from a member')
@@ -457,6 +472,83 @@ const commandDefs = [
         .addBooleanOption(opt =>
             opt.setName('ping')
                 .setDescription('Ping @everyone')
+                .setRequired(false)),
+
+    // ── Scheduled Posts ──
+    new SlashCommandBuilder()
+        .setName('schedule')
+        .setDescription('Schedule recurring posts to a channel')
+        .addSubcommand(sub =>
+            sub.setName('post')
+                .setDescription('Create a recurring post (daily 18:00 / weekly monday 18:00 / interval 60)')
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Channel to post to')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('content')
+                        .setDescription('Message content')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('schedule')
+                        .setDescription('e.g. daily 18:00, weekly monday 18:00, interval 60')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('title')
+                        .setDescription('Embed title')
+                        .setRequired(false))
+                .addStringOption(opt =>
+                    opt.setName('color')
+                        .setDescription('Hex color (e.g. #FF0000)')
+                        .setRequired(false)))
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List all scheduled posts'))
+        .addSubcommand(sub =>
+            sub.setName('cancel')
+                .setDescription('Cancel a scheduled post')
+                .addStringOption(opt =>
+                    opt.setName('id')
+                        .setDescription('Post ID (use /schedule list)')
+                        .setRequired(true))),
+
+    // ── Raid Mode ──
+    new SlashCommandBuilder()
+        .setName('raidmode')
+        .setDescription('Toggle server lockdown for raids')
+        .addSubcommand(sub =>
+            sub.setName('on')
+                .setDescription('Enable raid mode: timeout new joins + slowmode channels')
+                .addIntegerOption(opt =>
+                    opt.setName('duration')
+                        .setDescription('How long to time out new members (minutes, default 60)')
+                        .setRequired(false))
+                .addChannelOption(opt =>
+                    opt.setName('notice')
+                        .setDescription('Channel to post the lockdown notice (defaults to the log channel)')
+                        .setRequired(false)))
+        .addSubcommand(sub =>
+            sub.setName('off')
+                .setDescription('Disable raid mode and reset slowmode'))
+        .addSubcommand(sub =>
+            sub.setName('status')
+                .setDescription('Check whether raid mode is active')),
+
+    // ── Member Reports ──
+    new SlashCommandBuilder()
+        .setName('report')
+        .setDescription('Report a member to the moderation team')
+        .addUserOption(opt =>
+            opt.setName('target')
+                .setDescription('The member you want to report')
+                .setRequired(true))
+        .addStringOption(opt =>
+            opt.setName('reason')
+                .setDescription('Why are you reporting them?')
+                .setRequired(true))
+        .addStringOption(opt =>
+            opt.setName('message_id')
+                .setDescription('ID of the message to attach to the report (optional)')
                 .setRequired(false)),
 
     // ── Utility (owner only) ──
@@ -1031,10 +1123,11 @@ const commandDefs = [
                         .addChoices(
                             { name: 'Banned words', value: 'words' },
                             { name: 'Link allowlist', value: 'links' },
+                            { name: 'Regex patterns', value: 'regex' },
                         ))
                 .addStringOption(opt =>
                     opt.setName('pattern')
-                        .setDescription('Word or domain to filter')
+                        .setDescription('Word, domain, or regex pattern to filter')
                         .setRequired(true))
                 .addBooleanOption(opt =>
                     opt.setName('remove')
@@ -1058,6 +1151,7 @@ const commandDefs = [
                         .addChoices(
                             { name: 'Banned words', value: 'words' },
                             { name: 'Link allowlist', value: 'links' },
+                            { name: 'Regex patterns', value: 'regex' },
                         ))),
 
     // ── Prefix ──

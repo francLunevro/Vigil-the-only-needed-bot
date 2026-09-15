@@ -205,3 +205,93 @@ test('automod: export/import round-trips rules and filters', async () => {
     assert.strictEqual(hit, true);
     assert.strictEqual(deleted, 1);
 });
+
+test('automod: regex filter matches patterns, not literals', async () => {
+    enableRule('gr1', 'words');
+    am.addAutoModFilter('gr1', 'regex', 'discord\\.gg|bit\\.ly/', 'delete');
+    let deleted = 0;
+    const hit = await am.checkMessage(makeMessage({ content: 'join my server at https://discord.gg/xyz', delete: async () => { deleted++; } }), 'gr1');
+    assert.strictEqual(hit, true);
+    assert.strictEqual(deleted, 1);
+});
+
+test('automod: regex filter is case-sensitive by design', async () => {
+    enableRule('gr2', 'words');
+    am.addAutoModFilter('gr2', 'regex', 'VIP', 'delete');
+    let deleted = 0;
+    const hit = await am.checkMessage(makeMessage({ content: 'I am a VIP member', delete: async () => { deleted++; } }), 'gr2');
+    assert.strictEqual(hit, true);
+    const miss = await am.checkMessage(makeMessage({ content: 'I am a vip member', delete: async () => { deleted++; } }), 'gr2');
+    assert.strictEqual(miss, false);
+    assert.strictEqual(deleted, 1);
+});
+
+test('automod: regex filter pattern is stored verbatim (not lowercased)', async () => {
+    enableRule('gr3', 'words');
+    am.addAutoModFilter('gr3', 'regex', '[A-Z]{5,}', 'delete');
+    const filters = am.getAutoModFilters('gr3', 'regex');
+    assert.strictEqual(filters.length, 1);
+    assert.strictEqual(filters[0].pattern, '[A-Z]{5,}');
+});
+
+test('automod: invalid regex is rejected at add time', () => {
+    assert.strictEqual(am.isValidRegex('discord\\.gg'), true);
+    assert.strictEqual(am.isValidRegex('('), false);
+    assert.strictEqual(am.isValidRegex('[a-z'), false);
+});
+
+test('automod: invalid stored regex cannot crash the message pipeline', async () => {
+    enableRule('gr4', 'words');
+    // Insert a bad pattern directly (bypassing add-time validation, as a
+    // legacy import might) and confirm checkMessage skips it defensively.
+    const { getDb } = require('../src/db');
+    getDb().prepare('INSERT OR REPLACE INTO automod_filters (guild_id, filter_type, pattern, action) VALUES (?, ?, ?, ?)')
+        .run('gr4', 'regex', '(', 'delete');
+    const hit = await am.checkMessage(makeMessage({ content: 'anything at all' }), 'gr4');
+    assert.strictEqual(hit, false);
+});
+
+test('automod: regex filters round-trip through export/import', async () => {
+    enableRule('gr5', 'words');
+    am.addAutoModFilter('gr5', 'regex', 'discord\\.gg', 'warn');
+    const exported = am.exportAutoModConfig('gr5');
+    assert.strictEqual(exported.filters.regex.length, 1);
+    assert.strictEqual(exported.filters.regex[0].pattern, 'discord\\.gg');
+    assert.strictEqual(exported.filters.regex[0].action, 'warn');
+
+    am.importAutoModConfig('gr6', exported);
+    let warned = 0;
+    const msg = makeMessage({
+        content: 'check discord.gg now',
+        member: { user: { bot: false }, permissions: { has: () => false }, roles: { cache: { some: () => false } }, send: async () => { warned++; }, moderatable: true, kickable: true, timeout: async () => {}, kick: async () => {} },
+        deletable: false,
+    });
+    const hit = await am.checkMessage(msg, 'gr6');
+    assert.strictEqual(hit, true);
+    assert.strictEqual(warned, 1);
+});
+
+test('automod: bulkAddFilters (array) skips invalid regexes and keeps case', async () => {
+    // Array input avoids comma-splitting, which can't represent regexes that
+    // contain a comma (e.g. `{3,}`) — pass an array for regex bulk imports.
+    const added = am.bulkAddFilters('gr7', 'regex', ['discord\\.gg:delete', '(', '[A-Z]{3,}:warn']);
+    assert.strictEqual(added.length, 2);
+    const filters = am.getAutoModFilters('gr7', 'regex');
+    // getAutoModFilters returns rows ordered by primary key (pattern), so
+    // compare as a sorted set rather than insertion order.
+    const patterns = filters.map(f => f.pattern).sort();
+    assert.deepStrictEqual(patterns, ['[A-Z]{3,}', 'discord\\.gg']);
+    const warns = filters.filter(f => f.action === 'warn');
+    assert.strictEqual(warns.length, 1);
+    assert.strictEqual(warns[0].pattern, '[A-Z]{3,}');
+});
+
+test('automod: removing a regex filter matches the stored (case-sensitive) pattern', async () => {
+    // Regression: removeAutoModFilter used to lowercase every pattern, which
+    // made it impossible to remove a regex like `[A-Z]{5,}` (stored verbatim).
+    enableRule('gr8', 'words');
+    am.addAutoModFilter('gr8', 'regex', '[A-Z]{5,}', 'delete');
+    assert.strictEqual(am.getAutoModFilters('gr8', 'regex').length, 1);
+    assert.strictEqual(am.removeAutoModFilter('gr8', 'regex', '[A-Z]{5,}'), true);
+    assert.strictEqual(am.getAutoModFilters('gr8', 'regex').length, 0);
+});

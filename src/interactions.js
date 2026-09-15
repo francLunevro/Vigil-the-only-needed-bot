@@ -9,6 +9,7 @@ const { getDb } = require('./db');
 const { getLeadingOption, isOwner } = require('./helpers');
 const { logError } = require('./logError');
 const { sanitizeForEmbed, sanitizeForDM, validateModalInput } = require('./helpers');
+const { sendLog, modActionLogEmbed } = require('./logging');
 
 // ─── Custom ID Prefixes ───
 //   ck_{initiatorId}_{targetId}         = confirm kick
@@ -156,6 +157,13 @@ async function handleConfirmKick(interaction, parts) {
     try {
         await member.kick(reason);
         createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'kick', reason);
+        // Wick-style log entry in the moderation log channel.
+        await sendLog(modActionLogEmbed({
+            verb: 'Kick', color: 0xE74C3C,
+            target: member.user,
+            moderator: interaction.user,
+            reason,
+        }), 'moderation', null, guild.id);
         const embed = EmbedBuilder.from(interaction.message.embeds[0])
             .setColor(0xE74C3C)
             .setTitle('👢 Member Kicked ✅')
@@ -192,6 +200,8 @@ async function handleConfirmTempBan(interaction, parts) {
 
     const reasonField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Reason');
     const reason = reasonField ? reasonField.value : 'No reason provided';
+    const proofField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Proof');
+    const proof = proofField ? proofField.value : null;
 
     try {
         await guild.bans.create(targetId, { reason: '[Temp Ban ' + durationLabel + '] ' + reason, deleteMessageSeconds: deleteSeconds });
@@ -203,6 +213,17 @@ async function handleConfirmTempBan(interaction, parts) {
             .run(targetId, guild.id, reason, Date.now(), unbanAt);
 
         createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'tempban', reason + ' (Duration: ' + durationLabel + ')');
+
+        // Wick-style log entry in the moderation log channel.
+        const tbTarget = await interaction.client.users.fetch(targetId).catch(() => null);
+        await sendLog(modActionLogEmbed({
+            verb: 'Ban', color: 0xE74C3C,
+            target: tbTarget || { id: targetId },
+            moderator: interaction.user,
+            reason,
+            duration: durationLabel,
+            proof,
+        }), 'moderation', null, guild.id);
 
         const embed = EmbedBuilder.from(interaction.message.embeds[0])
             .setColor(0xE74C3C)
@@ -230,10 +251,22 @@ async function handleConfirmBan(interaction, parts) {
 
     const reasonField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Reason');
     const reason = reasonField ? reasonField.value : 'No reason provided';
+    const proofField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Proof');
+    const proof = proofField ? proofField.value : null;
 
     try {
         await guild.bans.create(targetId, { reason: reason, deleteMessageSeconds: deleteMessageSeconds });
         createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'ban', reason);
+        // Wick-style log entry in the moderation log channel.
+        const banTarget = await interaction.client.users.fetch(targetId).catch(() => null);
+        await sendLog(modActionLogEmbed({
+            verb: 'Ban', color: 0xE74C3C,
+            target: banTarget || { id: targetId },
+            moderator: interaction.user,
+            reason,
+            duration: 'Permanent',
+            proof,
+        }), 'moderation', null, guild.id);
         const embed = EmbedBuilder.from(interaction.message.embeds[0])
             .setColor(0xE74C3C)
             .setTitle('🔨 Member Banned ✅')

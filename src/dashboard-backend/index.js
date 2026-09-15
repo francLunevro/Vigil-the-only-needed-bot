@@ -29,9 +29,23 @@ const parts = [
 
 function createDashboard() {
     const app = express();
-    // Behind Railway/Discloud reverse proxies: makes req.ip and req.secure
-    // reflect the real client (X-Forwarded-For / X-Forwarded-Proto).
-    app.set('trust proxy', 1);
+    // Proxy trust policy. Makes req.ip and req.secure reflect the real client
+    // (X-Forwarded-For / X-Forwarded-Proto) — but only from peers we can trust.
+    //
+    // Default: XFF is honored only when the direct peer is a local address —
+    // loopback (same-host nginx/Caddy, Docker on localhost), link-local, or a
+    // private/ULA range (Railway, Discloud, Docker bridge networks). A bare VPS
+    // sees public peers, so client-supplied XFF is ignored and the per-IP rate
+    // limits can't be bypassed by rotating the header.
+    //
+    // TRUST_PROXY=1  trust XFF unconditionally (dashboard behind a public
+    //                 proxy such as Cloudflare)
+    // TRUST_PROXY=0  never trust XFF (strictest; no proxy at all)
+    const trustProxyEnv = process.env.TRUST_PROXY;
+    const trustProxy = trustProxyEnv === undefined
+        ? ['loopback', 'linklocal', 'uniquelocal']
+        : String(trustProxyEnv) === '1' || String(trustProxyEnv).toLowerCase() === 'true';
+    app.set('trust proxy', trustProxy);
     app.use(express.json({ limit: '10mb' }));
     app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
