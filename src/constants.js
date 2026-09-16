@@ -1,6 +1,6 @@
 // ──────────────────── Log Categories ────────────────────
 
-const LOG_CATEGORIES = ['messages', 'reactions', 'members', 'roles', 'server', 'voice', 'threads', 'emojis', 'bans', 'moderation', 'invites', 'stickers', 'automod', 'scheduled', 'stage', 'webhooks', 'integrations'];
+const LOG_CATEGORIES = ['messages', 'reactions', 'members', 'roles', 'server', 'voice', 'threads', 'emojis', 'bans', 'moderation', 'invites', 'stickers', 'automod', 'scheduled', 'stage', 'applications', 'webhooks', 'integrations'];
 
 const CATEGORY_EMOJIS = {
     messages: '\uD83D\uDCE8',
@@ -18,6 +18,7 @@ const CATEGORY_EMOJIS = {
     automod: '\uD83E\uDD16',
     scheduled: '\uD83D\uDCC5',
     stage: '\uD83C\uDF9F',
+    applications: '\uD83E\uDDE9',
     webhooks: '\uD83D\uDD17',
     integrations: '\uD83D\uDD17',
 };

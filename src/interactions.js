@@ -9,7 +9,7 @@ const { getDb } = require('./db');
 const { getLeadingOption, isOwner } = require('./helpers');
 const { logError } = require('./logError');
 const { sanitizeForEmbed, sanitizeForDM, validateModalInput } = require('./helpers');
-const { sendLog, modActionLogEmbed } = require('./logging');
+const { sendLog, modActionLogEmbed, membershipField } = require('./logging');
 
 // ─── Custom ID Prefixes ───
 //   ck_{initiatorId}_{targetId}         = confirm kick
@@ -163,6 +163,7 @@ async function handleConfirmKick(interaction, parts) {
             target: member.user,
             moderator: interaction.user,
             reason,
+            extraFields: [membershipField(member)],
         }), 'moderation', null, guild.id);
         const embed = EmbedBuilder.from(interaction.message.embeds[0])
             .setColor(0xE74C3C)

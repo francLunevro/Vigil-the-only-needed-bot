@@ -4,6 +4,7 @@ const { getWelcomeConfig, getGoodbyeConfig } = require('../config');
 const { buildGreetingEmbed } = require('../commands/greetings');
 const { replacePlaceholders } = require('../helpers');
 const { handleRaidModeJoin } = require('../raidMode');
+const { modActionLogEmbed, membershipField } = require('../logging');
 
 // ─── Send custom welcome/goodbye message ───
 
@@ -48,12 +49,10 @@ async function sendGreeting(member, type) {
                     ? '\n\u26A0\uFE0F **Warning: Account is only ' + daysSinceCreation + ' day' + (daysSinceCreation === 1 ? '' : 's') + ' old**'
                     : '';
 
-                const titleIcon = isBot ? '\uD83E\uDD16' : '\uD83D\uDC4B';
-                const titleText = isBot ? 'Bot Added' : 'Member Joined';
-                const description = isBot
-                    ? member.user + ' (**' + member.user.tag + '**) was added to the server'
-                    : member.user + ' joined the server';
-                const embedColor = isBot ? 0x9B59B6 : 0x3498DB;
+                const titleIcon = '\uD83D\uDC4B';
+                const titleText = 'Member Joined';
+                const description = member.user + ' joined the server';
+                const embedColor = 0x3498DB;
 
                 // Detect which invite was used (only for humans)
                 if (!isBot) {
@@ -73,25 +72,58 @@ async function sendGreeting(member, type) {
                     }
                 }
 
-                // Find who added the bot (only for bots)
-                let addedBy = '';
-                if (isBot && member.guild.fetchAuditLogs) {
-                    try {
-                        const audit = await member.guild.fetchAuditLogs({ type: 28, limit: 3 }); // BOT_ADD
-                        const entry = audit?.entries?.first();
-                        if (entry && entry.target?.id === member.user.id) {
-                            addedBy = ' by ' + String(entry.executor);
+                // Bots get their own Wick-style application log in the
+                // applications category (who added it, bot ID, account age).
+                if (isBot) {
+                    let addedByUser = null;
+                    if (member.guild.fetchAuditLogs) {
+                        try {
+                            const audit = await member.guild.fetchAuditLogs({ type: 28, limit: 3 }); // BOT_ADD
+                            const entry = audit?.entries?.first();
+                            if (entry && (entry.target?.id === member.user.id || entry.targetId === member.user.id)) {
+                                addedByUser = entry.executor || null;
+                            }
+                        } catch (err) {
+                            logError(err, 'events', 'guildMemberAdd/bot_audit');
                         }
-                    } catch (err) {
-                        logError(err, 'events', 'guildMemberAdd/bot_audit');
                     }
+
+                    const botEmbed = new EmbedBuilder()
+                        .setColor(0x9B59B6)
+                        .setAuthor({ name: member.user.tag, iconURL: member.user.displayAvatarURL() })
+                        .setTitle('\uD83E\uDDE9 Application Added')
+                        .setDescription(member.user + ' (**' + member.user.tag + '**) was added to the server')
+                        .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
+                        .addFields(
+                            {
+                                name: 'Application',
+                                value: '**' + member.user.tag + '**\nID: ' + member.user.id,
+                            },
+                            {
+                                name: 'Added By',
+                                value: addedByUser
+                                    ? '**' + addedByUser.tag + '** (' + String(addedByUser) + ')\nID: ' + addedByUser.id
+                                    : 'Unknown (audit log unavailable)',
+                            },
+                            {
+                                name: '\uD83D\uDD10 Account Info',
+                                value: 'Created: <t:' + Math.floor(member.user.createdTimestamp / 1000) + ':R>'
+                                    + '\nAge: ' + daysSinceCreation + ' day' + (daysSinceCreation === 1 ? '' : 's'),
+                            },
+                            { name: '\uD83D\uDC65 Member Count', value: String(member.guild.memberCount), inline: true },
+                        )
+                        .setFooter({ text: member.guild.name, iconURL: member.guild.iconURL() })
+                        .setTimestamp();
+
+                    deps.sendLog(botEmbed, 'applications', null, member.guild.id);
+                    return;
                 }
 
                 const embed = new EmbedBuilder()
                     .setColor(embedColor)
                     .setAuthor({ name: member.user.tag, iconURL: member.user.displayAvatarURL() })
                     .setTitle(titleIcon + ' ' + titleText)
-                    .setDescription(description + addedBy)
+                    .setDescription(description)
                     .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
                     .addFields(
                         {
@@ -134,10 +166,8 @@ async function sendGreeting(member, type) {
                     logError(err, 'events', 'members/ticketAutoClose');
                 }
 
-                // ── Check if kicked or banned by someone ──
-                let removedBy = '';
-                let removeType = 'left the server';
-                let embedColor = 0xE67E22;
+                // ── Detect whether this removal was a kick or ban (audit logs) ──
+                let removal = null;
                 try {
                     // Check audit log for kick (20) or ban (22)
                     for (const actionType of [20, 22]) {
@@ -149,15 +179,12 @@ async function sendGreeting(member, type) {
                         });
                         if (entry && entry.executor) {
                             const ago = Date.now() - entry.createdTimestamp;
-                            if (ago < 5000) { // Only within last 5 seconds
-                                removedBy = ' by ' + String(entry.executor);
-                                if (actionType === 20) {
-                                    removeType = 'was kicked';
-                                    embedColor = 0xE74C3C;
-                                } else {
-                                    removeType = 'was banned';
-                                    embedColor = 0x992D22;
-                                }
+                            if (ago < 15000) { // fresh enough to be THIS removal
+                                removal = {
+                                    type: actionType === 20 ? 'kick' : 'ban',
+                                    executor: entry.executor,
+                                    reason: entry.reason || null,
+                                };
                                 break;
                             }
                         }
@@ -166,16 +193,38 @@ async function sendGreeting(member, type) {
                     logError(err, 'events', 'guildMemberRemove/audit');
                 }
 
+                // Logging policy:
+                //   · our own kick/ban commands already posted their Wick-style
+                //     log entries → skip here (no duplicates)
+                //   · manual bans are logged by the guildBanAdd event (extras.js)
+                //   · manual kicks (by a human, outside the bot) → Wick-style
+                //     Kick log with the audit executor as moderator
+                //   · plain leave → the generic "Member Left" embed below
+                const selfRemoval = removal && member.client?.user && removal.executor?.id === member.client.user.id;
+                if (removal && (selfRemoval || removal.type === 'ban')) return;
+
+                if (removal && removal.type === 'kick') {
+                    const kickEmbed = modActionLogEmbed({
+                        verb: 'Kick', color: 0xE74C3C,
+                        target: member.user,
+                        moderator: removal.executor,
+                        reason: removal.reason,
+                        extraFields: [membershipField(member)],
+                    });
+                    deps.sendLog(kickEmbed, 'moderation', null, member.guild.id);
+                    return;
+                }
+
                 const daysSinceCreation = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);
                 const membershipDuration = member.joinedAt
                     ? deps.formatUptime(Date.now() - member.joinedAt.getTime())
                     : '*Unknown*';
 
                 const embed = new EmbedBuilder()
-                    .setColor(embedColor)
+                    .setColor(0xE67E22)
                     .setAuthor({ name: member.user.tag, iconURL: member.user.displayAvatarURL() })
-                    .setTitle('\uD83D\uDEAA Member ' + (removeType === 'left the server' ? 'Left' : 'Removed'))
-                    .setDescription(member.user + ' ' + removeType + removedBy)
+                    .setTitle('\uD83D\uDEAA Member Left')
+                    .setDescription(member.user + ' left the server')
                     .setThumbnail(member.user.displayAvatarURL({ size: 128 }))
                     .addFields(
                         {

@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { getGuildConfig } = require('./config');
 const { logError } = require('./logError');
+const { formatUptime } = require('./helpers');
 
 let client = null;
 
@@ -117,6 +118,19 @@ function modActionLogEmbed(opts) {
     return embed;
 }
 
+// Membership chip for kick/ban-style logs: Joined timestamp + Was-here
+// duration. Shared by manual-kick (audit log path) and the bot's own
+// /kick confirm flow so both render identically.
+function membershipField(member) {
+    const joinedTs = member?.joinedTimestamp;
+    const wasHere = joinedTs ? formatUptime(Date.now() - joinedTs) : 'Unknown';
+    return {
+        name: 'Membership',
+        value: 'Joined: ' + (joinedTs ? '<t:' + Math.floor(joinedTs / 1000) + ':R>' : 'Unknown')
+            + '\nWas here: ' + wasHere,
+    };
+}
+
 function setLoggerClient(c) {
     client = c;
 }
@@ -197,4 +211,4 @@ async function sendLog(embed, category, channelId, guildId) {
     }
 }
 
-module.exports = { setLoggerClient, sendLog, relativeTime, modActionLogEmbed, userStatsValue };
+module.exports = { setLoggerClient, sendLog, relativeTime, modActionLogEmbed, userStatsValue, membershipField };

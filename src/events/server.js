@@ -222,6 +222,7 @@ module.exports = [
             // Fetch recent audit logs to see what happened with webhooks
             let actionType = 'updated';
             let embedColor = 0xF1C40F;
+            let entry = null;
             let executor = null;
 
             try {
@@ -237,12 +238,12 @@ module.exports = [
                     }
                 }
                 if (audit?.entries?.size) {
-                    const entry = audit.entries.filter(e => {
+                    entry = audit.entries.filter(e => {
                         const tId = e.target?.id || e.targetId || e.extra?.channel?.id;
                         return tId === channel.id;
-                    }).first();
+                    }).first() || null;
                     if (entry) {
-                        executor = entry.executor;
+                        executor = entry.executor || null;
                         if (entry.action === 50) { actionType = 'created'; embedColor = 0x2ECC71; }
                         else if (entry.action === 52) { actionType = 'deleted'; embedColor = 0xE74C3C; }
                         else { actionType = 'updated'; embedColor = 0xF1C40F; }
@@ -252,22 +253,28 @@ module.exports = [
                 logError(err, 'events', 'webhooksUpdate');
             }
 
-            const byUser = executor ? ' by ' + String(executor) : '';
+            const titles = { created: '\uD83D\uDD17 Webhook Created', deleted: '\uD83D\uDD17 Webhook Deleted', updated: '\uD83D\uDD17 Webhook Updated' };
+            const webhookId = entry?.target?.id || entry?.targetId || channel.id || 'Unknown';
+            const webhookName = entry?.target?.name || entry?.changes?.find(c => c.key === 'name')?.new || null;
+            const byLine = executor ? ' by ' + String(executor) : '';
 
             const embed = new EmbedBuilder()
                 .setColor(embedColor)
-                .setTitle('\uD83D\uDD17 Webhook ' + actionType.charAt(0).toUpperCase() + actionType.slice(1))
-                .setDescription('A webhook was ' + actionType + ' in ' + channel.toString() + byUser)
+                .setTitle(titles[actionType])
+                .setDescription('A webhook was ' + actionType + ' in ' + channel.toString() + byLine)
                 .addFields(
+                    { name: 'Webhook', value: (webhookName ? '**' + webhookName + '**\n' : '') + 'ID: ' + webhookId, inline: true },
                     { name: 'Channel', value: channel.toString(), inline: true },
-                    { name: 'Action', value: actionType === 'created' ? '\u2705 Added' : actionType === 'deleted' ? '\u274C Removed' : '\uD83D\uDD04 Updated', inline: true },
+                    { name: (actionType === 'deleted' ? 'Removed By' : actionType === 'updated' ? 'Updated By' : 'Added By'), value: executor
+                        ? '**' + executor.tag + '** (' + String(executor) + ')\nID: ' + executor.id
+                        : 'Unknown (audit log unavailable)', inline: false },
                 )
                 .setFooter({ text: channel.guild.name, iconURL: channel.guild.iconURL() })
                 .setTimestamp();
 
             if (executor) embed.setAuthor({ name: executor.tag, iconURL: executor.displayAvatarURL() });
 
-            deps.sendLog(embed, 'webhooks', null, channel.guild.id);
+            deps.sendLog(embed, 'applications', null, channel.guild.id);
         },
     },
 ];

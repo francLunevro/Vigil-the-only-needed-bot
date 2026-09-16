@@ -318,6 +318,43 @@ test('ban confirm embed carries the Proof field into the flow', async () => {
     assert.strictEqual(proof.value, 'its ok u can be best counterer');
 });
 
+test('bot /kick confirm log includes the Was-Here membership chip', async () => {
+    sent.length = 0;
+    const { handleInteraction } = require('../src/interactions');
+    const kickedMember = {
+        id: TARGET.id,
+        user: TARGET,
+        kickable: true,
+        kick: async () => {},
+        joinedTimestamp: Date.now() - 24 * 86400000, // 24 days ago
+    };
+    await handleInteraction({
+        isButton: () => true,
+        isModalSubmit: () => false,
+        isStringSelectMenu: () => false,
+        isUserSelect: () => false,
+        customId: 'ck_999_555000111', // initiator 999 (MOD), target 555000111
+        user: MOD,
+        guild: {
+            id: 'g1',
+            members: {
+                me: { permissions: { has: () => true } },
+                fetch: async () => kickedMember,
+            },
+        },
+        message: { embeds: [{ fields: [{ name: 'Reason', value: 'raiding' }] }] },
+        update: async () => {},
+    });
+    assert.ok(await waitFor(() => sent.length > 0), 'kick log sent');
+    const embed = sent[0].msg.embeds[0];
+    assert.strictEqual(embed.data.title, 'Kick ZtUi3Vc');
+    assert.strictEqual(embed.data.footer.text, 'mod_user#0009');
+    const membership = embed.data.fields.find((f) => f.name === 'Membership');
+    assert.ok(membership, 'Membership field present on bot kick log');
+    assert.ok(membership.value.includes('Joined: <t:'), 'Joined timestamp chip');
+    assert.ok(membership.value.includes('Was here: 24d'), 'Was-here duration chip');
+});
+
 test('mute log includes the proof from /timeout', async () => {
     sent.length = 0;
     const { executeTimeout } = require('../src/commands/moderation');
