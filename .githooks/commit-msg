@@ -1,0 +1,13 @@
+#!/bin/sh
+# commit-msg hook: strip AI-generated co-author trailers before the
+# commit is recorded. Runs on every commit regardless of how the
+# message was supplied (-m, editor, amend, cherry-pick, merge).
+f="$1"
+[ -f "$f" ] || exit 0
+
+sed -i \
+    -e '/Generated with Codebuff/Id' \
+    -e '/Co-Authored-By:.*codebuff/Id' \
+    "$f"
+
+exit 0
