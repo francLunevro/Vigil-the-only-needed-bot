@@ -2,6 +2,7 @@ const { EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, Butt
 const { truncate } = require('../helpers');
 const { getGuildConfig, updateGuildConfig } = require('../config');
 const { deployCommands } = require('../deploy');
+const { logError } = require('../logError');
 
 async function executeRole(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -147,7 +148,7 @@ async function executeSlowmode(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to set slowmode: ' + err.message, ephemeral: true })                .catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to set slowmode: ' + err.message, ephemeral: true })                .catch((err) => logError(err, 'commands', 'admin/reply_failed'));
             }
 }
 
@@ -179,7 +180,7 @@ async function executeNickname(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to change nickname: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to change nickname: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'admin/reply_failed'));
     }
 }
 
@@ -203,7 +204,7 @@ async function executeSay(interaction) {
 
         await interaction.reply({ embeds: [embed], ephemeral: true });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to send message: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to send message: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'admin/reply_failed'));
     }
 }
 
@@ -234,9 +235,9 @@ async function executeEmbed(interaction) {
         await interaction.reply({
             content: '\u2705 Embed sent to ' + channel,
             ephemeral: true,
-        })                .catch(() => {});
+        })                .catch((err) => logError(err, 'commands', 'admin/reply_failed'));
             } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to send embed: ' + err.message, ephemeral: true })                .catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to send embed: ' + err.message, ephemeral: true })                .catch((err) => logError(err, 'commands', 'admin/reply_failed'));
             }
 }
 
@@ -408,71 +409,20 @@ async function executePoll(interaction) {
     const reply = await interaction.reply({ embeds: [embed], components: rows, fetchReply: true });
     const messageId = reply.id;
 
-    // ── Schedule auto-end if duration set ──
-    if (endTimestamp) {
-        const ms = (endTimestamp - Math.floor(Date.now() / 1000)) * 1000;
-        setTimeout(async () => {
-            try {
-                const channel = interaction.channel;
-                const msg = await channel.messages.fetch(messageId).catch(() => null);
-                if (!msg) return;
-                
-                // Calculate final results
-                const { getDb } = require('../db');
-                const db = getDb();
-                const rows = db.prepare('SELECT user_id, option_index FROM poll_votes WHERE message_id = ?').all(messageId);
-                const voteCounts = {};
-                const voters = {};
-                for (const r of rows) {
-                    voteCounts[r.option_index] = (voteCounts[r.option_index] || 0) + 1;
-                    if (!voters[r.option_index]) voters[r.option_index] = [];
-                    voters[r.option_index].push(r.user_id);
-                }
-                const totalVotes = Object.values(voteCounts).reduce((a, c) => a + c, 0);
-                
-                // Find winner(s)
-                let maxVotes = 0;
-                const winners = [];
-                for (const k in voteCounts) {
-                    if (Object.prototype.hasOwnProperty.call(voteCounts, k)) {
-                        if (voteCounts[k] > maxVotes) {
-                            maxVotes = voteCounts[k];
-                            winners.length = 0;
-                            winners.push(parseInt(k));
-                        } else if (voteCounts[k] === maxVotes && maxVotes > 0) {
-                            winners.push(parseInt(k));
-                        }
-                    }
-                }
-                
-                const totalVoters = Object.keys(voters).length || totalVotes;
-                
-                const finalEmbed = EmbedBuilder.from(msg.embeds[0])
-                    .setColor(0x95A5A6)
-                    .setTitle('\uD83D\uDDF3\uFE0F  Poll Ended: ' + question)
-                    .setDescription('\uD83D\uDD14 **Poll has ended!**' + (winners.length > 0 ? '\n\uD83C\uDFC6 **Winner:** ' + winners.map(w => '**' + options[w] + '**').join(', ') : ''));
-                
-                // Rebuild fields with final results
-                finalEmbed.spliceFields(0, embed.data.fields?.length || 0);
-                for (let i = 0; i < options.length; i++) {
-                    const count = voteCounts[i] || 0;
-                    const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
-                    const isWinner = winners.includes(i);
-                    finalEmbed.addFields({
-                        name: emojis[i] + '  ' + options[i] + (isWinner ? '  \uD83C\uDFC6' : ''),
-                        value: '\uD83D\uDCCA Votes: **' + count + '** (' + pct + '%)',
-                        inline: options.length <= 2,
-                    });
-                }
-                
-                finalEmbed.setFooter({ text: '\uD83D\uDDF3  ' + totalVotes + ' total votes  \u2022  ' + totalVoters + ' voter' + (totalVoters !== 1 ? 's' : '') + '  \u2022  Poll ended' });
-                await msg.edit({ embeds: [finalEmbed], components: [] });
-            } catch (err) {
-                const { logError } = require('../logError');
-                logError(err, 'commands', 'admin/poll_end');
-            }
-        }, ms);
-    }
+    // Record poll metadata so the dashboard API (POST /api/polls/end) and the
+    // timed-poll sweeper can locate and finalize this poll. endTimestamp is in
+    // seconds; store milliseconds. Auto-end itself is handled by the sweeper in
+    // interactions/polls.js — a setTimeout here would die with the process and
+    // leave the poll unfinalized after a restart.
+    require('../interactions/polls').recordPoll({
+        messageId,
+        guildId: interaction.guild.id,
+        channelId: interaction.channelId,
+        question,
+        options,
+        pollType: multi ? 'multi' : anonymous ? 'anonymous' : 'single',
+        endsAt: endTimestamp ? endTimestamp * 1000 : null,
+    });
 }
 
 async function executeAnnounce(interaction) {
@@ -503,9 +453,9 @@ async function executeAnnounce(interaction) {
 
     try {
         await channel.send({ content, embeds: [embed] });
-        await interaction.reply({ content: '\u2705 Announcement sent to ' + channel, ephemeral: true })                .catch(() => {});
+        await interaction.reply({ content: '\u2705 Announcement sent to ' + channel, ephemeral: true })                .catch((err) => logError(err, 'commands', 'admin/reply_failed'));
             } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to send announcement: ' + err.message, ephemeral: true })                .catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to send announcement: ' + err.message, ephemeral: true })                .catch((err) => logError(err, 'commands', 'admin/reply_failed'));
             }
 }
 

@@ -195,7 +195,7 @@ async function executeUnban(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to unban user: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to unban user: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/unban'));
     }
 }
 
@@ -258,7 +258,7 @@ async function executeTimeout(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to timeout user: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to timeout user: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/timeout'));
     }
 }
 
@@ -299,7 +299,7 @@ async function executeUntimeout(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to remove timeout: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to remove timeout: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/untimeout'));
     }
 }
 
@@ -344,7 +344,7 @@ async function executeWarn(interaction) {
                 await interaction.followUp({
                     content: '\u26A0\uFE0F **Auto-punish:** ' + target + ' was ' + result + ' (reached ' + warnings.length + ' warnings).',
                     ephemeral: true,
-                }).catch(() => {});
+                }).catch((err) => logError(err, 'commands', 'moderation/autoPunish_followUp'));
             }
         } catch (err) {
             logError(err, 'commands', 'moderation/thresholds');
@@ -447,7 +447,7 @@ async function executeLock(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to lock channel: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to lock channel: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/lock'));
     }
 }
 
@@ -472,7 +472,7 @@ async function executeUnlock(interaction) {
 
         await interaction.reply({ embeds: [embed] });
     } catch (err) {
-        await interaction.reply({ content: '\u26A0\uFE0F Failed to unlock channel: ' + err.message, ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: '\u26A0\uFE0F Failed to unlock channel: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/unlock'));
     }
 }
 

@@ -403,14 +403,14 @@ handlers.tempvc = async (message) => {
             if (locked) {
                 await channel.permissionOverwrites.edit(everyone, { Connect: false }, 'Temp VC locked');
                 await channel.permissionOverwrites.edit(message.member, { Connect: true }, 'Temp VC owner');
-                tv.updatePanels(guild).catch(() => {});
+                tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
                 return message.reply('🔒 Channel locked — only you can join now.');
             }
             const eow = channel.permissionOverwrites.cache.get(everyone.id);
             if (eow && eow.deny.has(PermissionFlagsBits.Connect)) await channel.permissionOverwrites.delete(everyone, 'Temp VC unlocked');
             const mow = channel.permissionOverwrites.cache.get(message.member.id);
             if (mow && mow.allow.has(PermissionFlagsBits.Connect)) await channel.permissionOverwrites.delete(message.member, 'Temp VC unlocked');
-            tv.updatePanels(guild).catch(() => {});
+            tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
             return message.reply('🔓 Channel unlocked — everyone can join.');
         } catch (err) { return message.reply('❌ Failed to ' + sub + ': ' + (err.message || err)); }
     }
@@ -428,7 +428,7 @@ handlers.tempvc = async (message) => {
         }
         tv.addSpawned(vcId, guild.id, message.author.id, row.trigger_id);
         tv.cancelDeletion(vcId);
-        tv.updatePanels(guild).catch(() => {});
+        tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         return message.reply('👑 You now own this channel.');
     }
 
@@ -470,7 +470,7 @@ async function handlePrefixMessage(message, prefix) {
             await runCommand(buildGateShim(message, cmdName), () => legacy(message));
         } catch (err) {
             logError(err, 'prefixCommands', cmdName);
-            message.reply('⚠️ An error occurred while executing that command.').catch(() => {});
+            message.reply('⚠️ An error occurred while executing that command.').catch((err) => logError(err, 'prefixCommands', 'error_reply'));
         }
         return true;
     }
@@ -481,7 +481,7 @@ async function handlePrefixMessage(message, prefix) {
     const built = buildPrefixInteraction(message, cmdName, args, prefix, alias ? alias.sub : undefined);
     if (built.unknown) return false;
     if (built.usage) {
-        await message.reply(built.usage).catch(() => {});
+        await message.reply(built.usage).catch((err) => logError(err, 'prefixCommands', 'usage_reply'));
         return true;
     }
 
@@ -489,7 +489,7 @@ async function handlePrefixMessage(message, prefix) {
         await runCommand(built.shim);
     } catch (err) {
         logError(err, 'prefixCommands', cmdName);
-        message.reply('⚠️ An error occurred while executing that command.').catch(() => {});
+        message.reply('⚠️ An error occurred while executing that command.').catch((err) => logError(err, 'prefixCommands', 'error_reply'));
     }
     return true;
 }

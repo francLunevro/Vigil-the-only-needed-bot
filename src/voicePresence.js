@@ -57,7 +57,7 @@ function enableDiscordJsVoice() {
             conn.once('error', (err) => {
                 logError(err, 'voicePresence', 'connection_' + guild.id);
                 clearPresence(guild.id);
-                clearActivity().catch(() => {});
+                clearActivity().catch((err) => logError(err, 'voicePresence', 'clearActivity_on_connection_error'));
             });
         }
     };
@@ -84,7 +84,7 @@ function leaveVoice(guild) {
     if (disconnectImpl) { try { disconnectImpl(guild); } catch { /* ignore */ } }
     const me = getBotMember(guild);
     if (me && me.voice && me.voice.channelId) {
-        try { me.voice.disconnect().catch(() => {}); } catch { /* ignore */ }
+        try { me.voice.disconnect().catch((err) => logError(err, 'voicePresence', 'disconnect')); } catch { /* ignore */ }
     }
 }
 

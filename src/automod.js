@@ -1,5 +1,6 @@
 const { getDb } = require('./db');
 const { sendLog } = require('./logging');
+const { logError } = require('./logError');
 const { EmbedBuilder } = require('discord.js');
 
 // ──────────────────── Rule Types ────────────────────
@@ -299,7 +300,7 @@ async function executeAutoModAction(message, guildId, violation) {
     // Warn user
     if (action === 'warn' || action === 'timeout') {
         try {
-            await message.member.send('⚠️ **Auto-Moderation** in **' + message.guild.name + '**\\nReason: ' + violation.reason).catch(() => {});
+            await message.member.send('⚠️ **Auto-Moderation** in **' + message.guild.name + '**\\nReason: ' + violation.reason).catch((err) => logError(err, 'automod', 'notify_member'));
         } catch { /* DMs closed */ }
     }
 

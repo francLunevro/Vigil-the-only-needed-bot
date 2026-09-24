@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { getRaidConfig, enableRaidMode, disableRaidMode } = require('../raidMode');
+const { logError } = require('../logError');
 
 async function executeRaidMode(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -26,7 +27,7 @@ async function executeRaidMode(interaction) {
                 .setTimestamp();
             await interaction.reply({ embeds: [embed], ephemeral: true });
         } catch (err) {
-            await interaction.reply({ content: 'Failed to enable raid mode: ' + err.message, ephemeral: true }).catch(() => {});
+            await interaction.reply({ content: 'Failed to enable raid mode: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'raidMode/enable'));
         }
     } else if (sub === 'off') {
         try {
@@ -38,7 +39,7 @@ async function executeRaidMode(interaction) {
                 .setTimestamp();
             await interaction.reply({ embeds: [embed], ephemeral: true });
         } catch (err) {
-            await interaction.reply({ content: 'Failed to disable raid mode: ' + err.message, ephemeral: true }).catch(() => {});
+            await interaction.reply({ content: 'Failed to disable raid mode: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'raidMode/disable'));
         }
     } else if (sub === 'status') {
         const cfg = getRaidConfig(guild.id);

@@ -1,5 +1,13 @@
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 const { logError } = require('./logError');
+const { LOG_CATEGORIES, LOG_CATEGORY_LABELS } = require('./constants');
+
+// /log channel + /log toggle both offer every log category, built from the
+// dispatcher's own list so the two surfaces can't drift.
+const LOG_CATEGORY_CHOICES = LOG_CATEGORIES.map(c => ({
+    name: LOG_CATEGORY_LABELS[c] || (c.charAt(0).toUpperCase() + c.slice(1)),
+    value: c,
+}));
 
 // ──────────────────── All Command Definitions ────────────────────
 
@@ -54,24 +62,7 @@ const commandDefs = [
                     opt.setName('type')
                         .setDescription('Log type to configure')
                         .setRequired(true)
-                        .addChoices(
-                            { name: 'Messages', value: 'messages' },
-                            { name: 'Reactions', value: 'reactions' },
-                            { name: 'Members', value: 'members' },
-                            { name: 'Roles', value: 'roles' },
-                            { name: 'Server', value: 'server' },
-                            { name: 'Voice', value: 'voice' },
-                            { name: 'Threads', value: 'threads' },
-                            { name: 'Emojis', value: 'emojis' },
-                            { name: 'Bans', value: 'bans' },
-                            { name: 'Invites', value: 'invites' },
-                            { name: 'Stickers', value: 'stickers' },
-                            { name: 'Auto Mod', value: 'automod' },
-                            { name: 'Scheduled', value: 'scheduled' },
-                            { name: 'Stage', value: 'stage' },
-                            { name: 'Webhooks', value: 'webhooks' },
-                            { name: 'Integrations', value: 'integrations' },
-                        ))
+                        .addChoices(...LOG_CATEGORY_CHOICES))
                 .addChannelOption(opt =>
                     opt.setName('channel')
                         .setDescription('Channel to send these logs to (leave empty to clear)')
@@ -83,24 +74,7 @@ const commandDefs = [
                     opt.setName('category')
                         .setDescription('Category to toggle')
                         .setRequired(true)
-                        .addChoices(
-                            { name: 'Messages', value: 'messages' },
-                            { name: 'Reactions', value: 'reactions' },
-                            { name: 'Members', value: 'members' },
-                            { name: 'Roles', value: 'roles' },
-                            { name: 'Server', value: 'server' },
-                            { name: 'Voice', value: 'voice' },
-                            { name: 'Threads', value: 'threads' },
-                            { name: 'Emojis', value: 'emojis' },
-                            { name: 'Bans', value: 'bans' },
-                            { name: 'Invites', value: 'invites' },
-                            { name: 'Stickers', value: 'stickers' },
-                            { name: 'Auto Mod', value: 'automod' },
-                            { name: 'Scheduled', value: 'scheduled' },
-                            { name: 'Stage', value: 'stage' },
-                            { name: 'Webhooks', value: 'webhooks' },
-                            { name: 'Integrations', value: 'integrations' },
-                        ))
+                        .addChoices(...LOG_CATEGORY_CHOICES))
                 .addBooleanOption(opt =>
                     opt.setName('enabled')
                         .setDescription('Enable or disable')

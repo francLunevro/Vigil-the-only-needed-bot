@@ -141,9 +141,9 @@ let statTimer = null;
 function startServerStats(client) {
     if (statTimer) return;
     // First sweep shortly after boot (guilds are usually ready by then).
-    setTimeout(() => updateAllServerStats(client).catch(() => {}), 10 * 1000);
+    setTimeout(() => updateAllServerStats(client).catch((err) => logError(err, 'serverstats', 'updateAll')), 10 * 1000);
     // Keep counters fresh — the join/leave hooks handle most cases instantly.
-    statTimer = setInterval(() => updateAllServerStats(client).catch(() => {}), 10 * 60 * 1000);
+    statTimer = setInterval(() => updateAllServerStats(client).catch((err) => logError(err, 'serverstats', 'updateAll')), 10 * 60 * 1000);
     statTimer.unref();
 }
 

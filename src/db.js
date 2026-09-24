@@ -624,6 +624,57 @@ function initSchema() {
             )`);
             db.exec('CREATE INDEX IF NOT EXISTS idx_reports_guild ON reports(guild_id, status)');
         } },
+        // Poll metadata: the channel a poll lives in plus its question/options,
+        // so POST /api/polls/end can locate the message and finalize it without
+        // scanning every channel. poll_votes only keys on message_id.
+        { name: '0034_create_polls', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS polls (
+                message_id TEXT PRIMARY KEY,
+                guild_id TEXT,
+                channel_id TEXT,
+                question TEXT NOT NULL DEFAULT '',
+                options TEXT NOT NULL DEFAULT '[]',
+                poll_type TEXT NOT NULL DEFAULT 'single',
+                created_at INTEGER NOT NULL,
+                ends_at INTEGER,
+                ended INTEGER NOT NULL DEFAULT 0
+            )`);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_polls_ended ON polls(ended, ends_at)');
+        } },
+        // Dashboard sessions used to live in a process Map, so every restart
+        // logged the whole dashboard out and two replicas could never share
+        // state. Persisted here instead — see dashboard-backend/core.js.
+        { name: '0035_create_dashboard_sessions', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS dashboard_sessions (
+                token TEXT PRIMARY KEY,
+                method TEXT NOT NULL DEFAULT 'password',
+                user_id TEXT,
+                access_token TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )`);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires ON dashboard_sessions(expires_at)');
+        } },
+        // Rate-limit windows, also formerly in-memory (per-process, so a
+        // restart handed every client a fresh budget). One row per (bucket, ip).
+        { name: '0036_create_rate_limit_hits', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS rate_limit_hits (
+                bucket TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                window_start INTEGER NOT NULL,
+                PRIMARY KEY (bucket, ip)
+            )`);
+        } },
+        // Access tokens used to be valid forever, so a leaked one was both
+        // permanent and undetectable. NULL means "never expires", which is
+        // what every pre-existing row gets — no one is locked out by the
+        // upgrade; freshly issued tokens carry a real expiry.
+        { name: '0037_dash_users_expires_at', run: () => addColumnIfMissing('dash_users', 'expires_at', 'INTEGER') },
+        // When the token was last exchanged for a session. Makes a leaked
+        // token visible in the dashboard instead of silently powering someone's
+        // login. Only the login path writes this.
+        { name: '0038_dash_users_last_used_at', run: () => addColumnIfMissing('dash_users', 'last_used_at', 'INTEGER') },
     ];
 
     for (const migration of MIGRATIONS) {
@@ -931,8 +982,11 @@ function recordErrorLog({ tag, message, extra, meta, stack, timestamp } = {}) {
         const d = getDb();
         d.prepare('INSERT INTO error_logs (tag, message, extra, meta, stack, timestamp) VALUES (?, ?, ?, ?, ?, ?)')
             .run(tag || 'general', String(message || ''), extra ? String(extra) : '', meta ? JSON.stringify(meta) : '', stack ? String(stack) : '', timestamp || Date.now());
-        // Cap the table — keep the most recent 500 entries
-        d.prepare('DELETE FROM error_logs WHERE id NOT IN (SELECT id FROM error_logs ORDER BY timestamp DESC LIMIT 500)').run();
+        // Cap the table — keep the most recent 500 entries. id DESC breaks
+        // ties when a burst of errors shares one millisecond (without it the
+        // tie-break is rowid-ascending, so the cap kept the oldest of the tie
+        // and discarded the newest).
+        d.prepare('DELETE FROM error_logs WHERE id NOT IN (SELECT id FROM error_logs ORDER BY timestamp DESC, id DESC LIMIT 500)').run();
     } catch (e) {
         // Never let logging break the app
     }

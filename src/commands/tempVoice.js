@@ -6,6 +6,7 @@
 const { isOwner } = require('../helpers');
 const { hasPermission } = require('../permissions');
 const tv = require('../tempVoice');
+const { logError } = require('../logError');
 
 function canAdmin(interaction) {
     return isOwner(interaction.user.id) || hasPermission(interaction.guild.id, 'tempvc', interaction.user.id);
@@ -167,7 +168,7 @@ async function executeTempVoice(interaction) {
     }
     tv.addSpawned(vcId, guild.id, interaction.user.id, row.trigger_id);
     tv.cancelDeletion(vcId);
-    tv.updatePanels(guild).catch(() => {});
+    tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
     return interaction.reply({ content: '👑 You now own this channel. You can `/tempvc rename`, `/tempvc limit`, `/tempvc lock` it.', ephemeral: true });
 
 }

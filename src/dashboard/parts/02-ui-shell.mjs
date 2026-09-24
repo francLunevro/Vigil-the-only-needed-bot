@@ -1,4 +1,5 @@
 import { applyLabelPref, applyWidgetVis, backupNow, bgAnimId, cfg, checkAuth, esc, fnData, initBgStyles, initPalettes, initThemes, loadAct, loadAn, loadBackups, loadBrand, loadCfg, loadCmdUsage, loadCommands, loadGiveaways, loadOv, loadRm, loadServers, loadSrvAudit, loadSrvChannels, loadSrvLogging, loadSrvRoles, loadSys, saveSettings, showSkeleton, showToast, srObs, stRf, startBg, toggleTheme } from './01-foundation.mjs';
+import { installInputUpgrades, themeSweep } from './11-motion.mjs';
 import { applyCompactPref, loadSrvModTools } from './03-mod-tools.mjs';
 import { loadTickets } from './04-tickets.mjs';
 // ═══ COMMAND PALETTE (Ctrl+K) ═══
@@ -393,4 +394,4 @@ function initSSE(){
 
 window.addEventListener('beforeunload',()=>{if(bgAnimId)cancelAnimationFrame(bgAnimId)});
 
-checkAuth().then(async ok=>{if(!ok)return;initThemes();initPalettes();initBgStyles();applyCompactPref();applyLabelPref();await loadCfg();startBg(cfg.backgroundStyle||'dots');await loadOv();await loadAn();await loadServers();await loadAct();await loadCommands();await loadRm();await loadSys();await loadTickets();loadCmdUsage();loadBrand();stRf();initSSE()});
+checkAuth().then(async ok=>{if(!ok)return;initThemes();initPalettes();initBgStyles();applyCompactPref();applyLabelPref();await loadCfg();startBg(cfg.backgroundStyle||'dots');installInputUpgrades();await loadOv();await loadAn();await loadServers();await loadAct();await loadCommands();await loadRm();await loadSys();await loadTickets();loadCmdUsage();loadBrand();stRf();initSSE()});

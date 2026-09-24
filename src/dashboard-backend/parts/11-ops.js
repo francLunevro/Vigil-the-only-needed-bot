@@ -11,7 +11,7 @@ const { getDb, getErrorLogs, getErrorTagCounts, clearErrorLogs, backupDatabase, 
 const { getDataDir } = require('../../data');
 const { logError } = require('../../logError');
 const { discordApiBreaker } = require('../../helpers');
-const { getClient } = require('../core');
+const { getClient, getRateLimitConfig, invalidateRateLimitConfigCache } = require('../core');
 
 function register(app, ctx) {
     const { requireAuth, requireOwner, checkOwner } = ctx;
@@ -42,27 +42,28 @@ function register(app, ctx) {
     });
 
     // ── Rate Limit Configuration ──
+    // Reads/writes the config every limiter consumes (see core.js
+    // getRateLimitConfig). The response is always the EFFECTIVE config —
+    // defaults merged with saved overrides — so the panel shows what is
+    // actually enforced.
     app.get('/api/ratelimit/config', requireAuth, requireOwner, (req, res) => {
-        const db = getDb();
-        const row = db.prepare('SELECT value FROM bot_config WHERE key = ?').get('ratelimit_config');
-        const config = row ? JSON.parse(row.value) : {
-            global: { windowMs: 60000, max: 120 },
-            login: { windowMs: 60000, max: 10 },
-            api: { windowMs: 60000, max: 100 },
-            modActions: { windowMs: 60000, max: 30 },
-        };
-        res.json(config);
+        res.json(getRateLimitConfig());
     });
 
     app.post('/api/ratelimit/config', requireAuth, requireOwner, (req, res) => {
         const { global, login, api, modActions } = req.body;
-        const db = getDb();
-        const config = {};
-        if (global) config.global = { windowMs: Math.max(1000, global.windowMs), max: Math.max(1, global.max) };
-        if (login) config.login = { windowMs: Math.max(1000, login.windowMs), max: Math.max(1, login.max) };
-        if (api) config.api = { windowMs: Math.max(1000, api.windowMs), max: Math.max(1, api.max) };
-        if (modActions) config.modActions = { windowMs: Math.max(1000, modActions.windowMs), max: Math.max(1, modActions.max) };
-        db.prepare('INSERT OR REPLACE INTO bot_config (key, value) VALUES (?, ?)').run('ratelimit_config', JSON.stringify(config));
+        const config = getRateLimitConfig();
+        const merge = (incoming, current) => ({
+            windowMs: Math.max(1000, Number(incoming.windowMs) || current.windowMs),
+            max: Math.max(1, Number(incoming.max) || current.max),
+        });
+        if (global) config.global = merge(global, config.global);
+        if (login) config.login = merge(login, config.login);
+        if (api) config.api = merge(api, config.api);
+        if (modActions) config.modActions = merge(modActions, config.modActions);
+        getDb().prepare('INSERT OR REPLACE INTO bot_config (key, value) VALUES (?, ?)').run('ratelimit_config', JSON.stringify(config));
+        // Make the new limits live immediately instead of after the cache TTL
+        invalidateRateLimitConfigCache();
         res.json({ success: true, config });
     });
 

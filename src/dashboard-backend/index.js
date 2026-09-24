@@ -46,8 +46,21 @@ function createDashboard() {
         ? ['loopback', 'linklocal', 'uniquelocal']
         : String(trustProxyEnv) === '1' || String(trustProxyEnv).toLowerCase() === 'true';
     app.set('trust proxy', trustProxy);
-    app.use(express.json({ limit: '10mb' }));
-    app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    // Body limits: 1 MB comfortably covers normal dashboard traffic; the bulk
+    // import endpoint is the one route that legitimately carries an entire
+    // exported database, so it gets its own larger parser instead of raising
+    // the limit for every route.
+    const jsonSmall = express.json({ limit: '1mb' });
+    const jsonLarge = express.json({ limit: '25mb' });
+    const formSmall = express.urlencoded({ extended: true, limit: '1mb' });
+    const formLarge = express.urlencoded({ extended: true, limit: '25mb' });
+    const LARGE_BODY_PATHS = new Set(['/api/import/all']);
+    app.use((req, res, next) => {
+        const path = String(req.path || '').split('?')[0];
+        const isLarge = LARGE_BODY_PATHS.has(path);
+        (isLarge ? jsonLarge : jsonSmall)(req, res, () =>
+            (isLarge ? formLarge : formSmall)(req, res, next));
+    });
 
     // Defense-in-depth CSP. No 'unsafe-inline' in script-src: the frontend
     // dispatches all events through a delegated listener reading data-fn /

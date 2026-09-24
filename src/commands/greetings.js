@@ -1,28 +1,16 @@
 const { EmbedBuilder } = require('discord.js');
-const { getWelcomeConfig, getGoodbyeConfig, updateWelcomeConfig } = require('../config');
+const { getWelcomeConfig, getGoodbyeConfig, updateWelcomeConfig, displayColorToInt } = require('../config');
 const { replacePlaceholders } = require('../helpers');
 
 // ─── Shared helpers ───
-
-function parseHex(hex) {
-    if (!hex) return null;
-    try {
-        const c = parseInt(hex.replace('#', ''), 16);
-        if (isNaN(c) || c < 0 || c > 0xFFFFFF) return null;
-        return c;
-    } catch { return null; }
-}
-
-function hexToInt(hex) {
-    const c = parseHex(hex);
-    return c || 0x5865F2;
-}
+// Color strings are parsed by config.js displayColorToInt, so greetings,
+// tickets and the dashboard all read '#RRGGBB' the same way.
 
 // ─── Build a welcome/goodbye embed from config ───
 
 function buildGreetingEmbed(cfg, member, type) {
     const embed = new EmbedBuilder()
-        .setColor(hexToInt(cfg.embedColor));
+        .setColor(displayColorToInt(cfg.embedColor, 0x5865F2));
 
     if (cfg.embedTitle) {
         embed.setTitle(replacePlaceholders(cfg.embedTitle, member, type));
@@ -71,7 +59,7 @@ function buildConfigEmbed(cfg, type, _guild) {
     if (cfg.embedAuthor) lines.push('**Author:** ' + cfg.embedAuthor.slice(0, 100));
 
     return new EmbedBuilder()
-        .setColor(hexToInt(cfg.embedColor))
+        .setColor(displayColorToInt(cfg.embedColor, 0x5865F2))
         .setTitle('\\uD83D\\uDC4B ' + typeLabel + ' Settings')
         .setDescription(lines.join('\\n'))
         .setFooter({ text: 'Placeholders: {user} {username} {server} {membercount} {userid} {age} {created}' })
@@ -159,7 +147,7 @@ async function handleGreeting(interaction, type) {
         await interaction.reply({ embeds: [embed], ephemeral: true });
     } else if (sub === 'color') {
         const hex = interaction.options.getString('hex');
-        if (hex && parseHex(hex) === null) {
+        if (hex && displayColorToInt(hex) === null) {
             return interaction.reply({ content: '\\u26A0\\uFE0F Invalid hex color! Use format like `#5865F2` or `FF5733`.', ephemeral: true });
         }
         updateWelcomeConfig(guild.id, type, (cfg) => {
@@ -167,7 +155,7 @@ async function handleGreeting(interaction, type) {
             return cfg;
         });
         const embed = new EmbedBuilder()
-            .setColor(hex ? parseHex(hex) : 0x5865F2)
+            .setColor(displayColorToInt(hex, 0x5865F2))
             .setTitle('\\uD83C\\uDFA8 ' + typeLabel + ' Embed Color ' + (hex ? 'Updated' : 'Reset'))
             .setDescription(hex ? 'Color set to `' + hex + '`' : 'Color reset to default.')
             .setFooter({ text: 'Changed by ' + interaction.user.tag })

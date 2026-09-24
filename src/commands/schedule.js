@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { addScheduledPost, listScheduledPosts, removeScheduledPost, parseSchedule } = require('../scheduledPosts');
+const { logError } = require('../logError');
 
 async function executeSchedule(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -48,7 +49,7 @@ async function executeSchedule(interaction) {
                 .setTimestamp();
             await interaction.reply({ embeds: [embed], ephemeral: true });
         } catch (err) {
-            await interaction.reply({ content: 'Failed to schedule post: ' + err.message, ephemeral: true }).catch(() => {});
+            await interaction.reply({ content: 'Failed to schedule post: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'schedule/post'));
         }
 
     } else if (sub === 'list') {

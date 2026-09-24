@@ -19,13 +19,37 @@ function trackActivity(guildId, userId, channelId) {
 }
 
 // ──────────────────── Log deleted/edited messages for search ────────────────────
+// The cap is enforced, but the retention delete costs a sort + subquery per
+// call, and this runs on every deleted/edited message — so it's throttled to
+// once every few minutes per guild instead of once per insert. The table can
+// overshoot the cap by whatever arrives inside one throttle window, which is
+// exactly the trade this function makes in exchange for a cheap hot path.
+const MESSAGE_LOG_CAP = 1000;
+// Throttle window. Tests set MESSAGE_LOG_PRUNE_MS=0 (before requiring this
+// module) to restore prune-on-every-insert behaviour.
+const MESSAGE_LOG_PRUNE_MS = Number.isFinite(Number(process.env.MESSAGE_LOG_PRUNE_MS))
+    ? Math.max(0, Number(process.env.MESSAGE_LOG_PRUNE_MS))
+    : 5 * 60 * 1000;
+const lastMessageLogPrune = new Map();
+
+function pruneMessageLog(db, guildId) {
+    const now = Date.now();
+    if (now - (lastMessageLogPrune.get(guildId) || 0) < MESSAGE_LOG_PRUNE_MS) return;
+    lastMessageLogPrune.set(guildId, now);
+    // id DESC breaks ties when a burst of events shares one millisecond —
+    // without it SQLite sorts equal timestamps by rowid ascending, so the
+    // OFFSET skipped the OLDEST rows and retention deleted the newest ones.
+    db.prepare(`DELETE FROM message_log WHERE id IN (
+        SELECT id FROM message_log WHERE guild_id = ? ORDER BY logged_at DESC, id DESC LIMIT -1 OFFSET ?
+    )`).run(guildId, MESSAGE_LOG_CAP);
+}
+
 function logMessageAction(guildId, channelId, messageId, authorId, authorTag, content, action, attachments) {
     const db = getDb();
     try {
         db.prepare('INSERT INTO message_log (guild_id, channel_id, message_id, author_id, author_tag, content, action, attachments, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
             .run(guildId, channelId, messageId, authorId, authorTag, content || '', action, attachments ? JSON.stringify(attachments) : null, Date.now());
-        // Keep only last 1000 per guild
-        db.prepare('DELETE FROM message_log WHERE id IN (SELECT id FROM message_log WHERE guild_id = ? ORDER BY logged_at DESC LIMIT -1 OFFSET 1000)').run(guildId);
+        pruneMessageLog(db, guildId);
     } catch (err) {
         logError(err, 'events', 'messages/logMessageAction');
     }
@@ -65,7 +89,7 @@ module.exports = [
             trackActivity(message.guild.id, message.author.id, message.channelId);
 
             // Auto-mod check (async, non-blocking — runs in background)
-            checkMessage(message, message.guild.id).catch(() => {});
+            checkMessage(message, message.guild.id).catch((err) => logError(err, 'events', 'messages/automod'));
 
             // Prefix dispatch — cached lookup supports ANY configured prefix
             // (the old hardcoded ; / ! . gate silently broke custom prefixes)

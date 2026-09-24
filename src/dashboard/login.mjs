@@ -1,9 +1,12 @@
 // Login page script — extracted from an inline <script> block so the CSP can
 // forbid 'unsafe-inline' in script-src. Served as a module from /static.
-// Theme toggle
+import { themeSweep, buildAvatarPicker, attachSmoothCaret, makePillButton } from './parts/11-motion.mjs';
+
+// Theme toggle — the flip runs inside the white/black view-transition sweep
+// (pouring out of the last click, usually the toggle button itself).
 let loginDark = true;
 function applyLoginTheme(isDark) { document.body.classList.toggle('light-mode', !isDark); loginDark = isDark; const ti = document.getElementById('loginThemeIcon'), btn = document.getElementById('loginThemeBtn'); if (ti) ti.innerHTML = isDark ? '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>' : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'; if (btn) { btn.style.borderColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'; btn.style.background = isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)'; btn.style.color = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)' } }
-function toggleTheme() { applyLoginTheme(!loginDark); localStorage.setItem('loginTheme', loginDark ? 'dark' : 'light') }
+function toggleTheme() { themeSweep(() => applyLoginTheme(!loginDark)); localStorage.setItem('loginTheme', loginDark ? 'dark' : 'light') }
 const savedTheme = localStorage.getItem('loginTheme'); if (savedTheme === 'light') applyLoginTheme(false);
 document.getElementById('loginThemeBtn').addEventListener('click', toggleTheme);
 // Readonly until focus: defeats password managers pre-filling a shared kiosk.
@@ -11,6 +14,27 @@ document.getElementById('password').addEventListener('focus', function () { this
 
 // Show brand name if set
 const brandEl = document.createElement('div'); brandEl.style.cssText = 'position:fixed;bottom:16px;left:0;right:0;text-align:center;z-index:1;font-size:10px;color:' + (document.body.classList.contains('light-mode') ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)') + ';letter-spacing:0.3px;pointer-events:none;font-family:Inter,sans-serif'; brandEl.textContent = ''; (async () => { try { const r = await fetch('/api/status'); if (r.ok) { const d = await r.json(); if (d.brandName) { brandEl.textContent = 'Powered by ' + d.brandName; document.getElementById('loginBrand').style.display = 'none' } } } catch { } })(); document.body.appendChild(brandEl); document.getElementById('loginThemeBtn').addEventListener('mouseenter', () => { const btn = document.getElementById('loginThemeBtn'); btn.style.borderColor = loginDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' }); document.getElementById('loginThemeBtn').addEventListener('mouseleave', () => { const btn = document.getElementById('loginThemeBtn'); btn.style.borderColor = loginDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' });
+
+// Avatar picker — pure aesthetic, remembered locally. The card's glow ring
+// tints to the chosen avatar's accent color.
+try {
+    const pickerHost = document.getElementById('avatarPicker');
+    if (pickerHost) {
+        buildAvatarPicker(pickerHost, { storageKey: 'loginAvatar', onPick: (a) => {
+            const card = document.querySelector('.login-card');
+            if (card) card.style.boxShadow = '0 0 80px rgba(' + a.rgb + ',0.14), 0 24px 80px rgba(0,0,0,0.6)';
+        } });
+    }
+} catch { /* decoration only — never block login */ }
+
+// Smooth caret on the text inputs + pill-morph submit button.
+try {
+    attachSmoothCaret(document.getElementById('password'));
+    attachSmoothCaret(document.getElementById('discordId'));
+    attachSmoothCaret(document.getElementById('accessToken'));
+    const loginBtnPill = makePillButton(document.getElementById('loginBtn'));
+    if (loginBtnPill) window.__loginPill = loginBtnPill;
+} catch { /* decoration only — never block login */ }
 
 // Floating particles
 const fc = document.getElementById('floatContainer');
@@ -31,8 +55,8 @@ resize(); window.addEventListener('resize', resize); anim();
 let loginMode = 'password';
 function switchMode(m) { loginMode = m; document.querySelectorAll('.tab-btn').forEach(t => t.classList.toggle('active', t.dataset.mode === m)); document.getElementById('passwordFields').style.display = m === 'password' ? '' : 'none'; document.getElementById('discordFields').style.display = m === 'discord' ? '' : 'none'; document.getElementById('modeHint').textContent = m === 'password' ? 'Enter your password to sign in.' : 'Enter your Discord user ID. Only granted users can use this.'; (m === 'password' ? document.getElementById('password') : document.getElementById('discordId')).focus() }
 document.getElementById('loginTabs').addEventListener('click', e => { const b = e.target.closest('.tab-btn'); if (b) switchMode(b.dataset.mode) });
-document.getElementById('loginForm').addEventListener('submit', async e => { e.preventDefault(); const btn = document.getElementById('loginBtn'), err = document.getElementById('errorMsg'); btn.classList.add('loading'); err.classList.remove('show'); try {      const body = loginMode === 'password' ? { password: document.getElementById('password').value } : { discordId: document.getElementById('discordId').value, accessToken: document.getElementById('accessToken').value }; const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const d = await r.json(); if (d.success) { window.location.href = '/' } else {              err.textContent = 'Invalid ' + (loginMode === 'password' ? 'password' : 'credentials') + '.'; err.classList.add('show') } } catch { err.textContent = 'Connection error.'; err.classList.add('show') }
-    btn.classList.remove('loading') });
+document.getElementById('loginForm').addEventListener('submit', async e => { e.preventDefault(); const btn = document.getElementById('loginBtn'), err = document.getElementById('errorMsg'); err.classList.remove('show'); const submit = async () => { try {      const body = loginMode === 'password' ? { password: document.getElementById('password').value } : { discordId: document.getElementById('discordId').value, accessToken: document.getElementById('accessToken').value }; const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const d = await r.json(); if (d.success) { window.location.href = '/' } else {              err.textContent = 'Invalid ' + (loginMode === 'password' ? 'password' : 'credentials') + '.'; err.classList.add('show') } } catch { err.textContent = 'Connection error.'; err.classList.add('show') } };
+    if (window.__loginPill) await window.__loginPill.run(submit); else { btn.classList.add('loading'); await submit(); btn.classList.remove('loading'); } });
 
 // ═══ Clear form on load (security: prevent password persistence) ═══
 window.addEventListener('pageshow', e => {

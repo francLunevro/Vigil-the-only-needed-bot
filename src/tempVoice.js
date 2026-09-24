@@ -330,7 +330,7 @@ async function spawnChannel(guild, member, trigger) {
         // Bot can't create channels (permissions) — keep the member where they
         // are and let them know, so they don't sit there wondering.
         logError(err, 'tempvoice', 'create_' + guild.id);
-        if (member.send) member.send('❌ I couldn\'t create a temp voice channel for you — the bot is missing **Manage Channels** permission (or the category is full).').catch(() => {});
+        if (member.send) member.send('❌ I couldn\'t create a temp voice channel for you — the bot is missing **Manage Channels** permission (or the category is full).').catch((err) => logError(err, 'tempvoice', 'notify_create_failed'));
         return null;
     }
 
@@ -342,11 +342,11 @@ async function spawnChannel(guild, member, trigger) {
         logError(err, 'tempvoice', 'move_' + guild.id);
         cancelDeletion(channel.id);
         removeSpawned(channel.id);
-        channel.delete('Member could not be moved into temp channel').catch(() => {});
-        updatePanels(guild).catch(() => {});
+        channel.delete('Member could not be moved into temp channel').catch((err) => logError(err, 'tempvoice', 'delete_rollback'));
+        updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         return null;
     }
-    updatePanels(guild).catch(() => {});
+    updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
     return channel;
 }
 
@@ -380,7 +380,7 @@ function scheduleDeletionIfEmpty(guild, channelId) {
             if (ch.members && ch.members.size > 0) return; // someone joined again
             await ch.delete('Temp voice channel empty');
             removeSpawned(channelId);
-            updatePanels(guild).catch(() => {});
+            updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         } catch (err) {
             logError(err, 'tempvoice', 'delete_' + channelId);
         }
@@ -425,7 +425,7 @@ async function setChannelLocked(channel, guild, member, locked) {
             await channel.permissionOverwrites.delete(member, 'Temp VC unlocked');
         }
     }
-    updatePanels(guild).catch(() => {});
+    updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
 }
 
 // "Create my VC" (panel button): gives the member their own channel using
@@ -495,7 +495,7 @@ async function deleteOwnedChannel(guild, ownerId) {
             logError(err, 'tempvoice', 'ownerDelete_' + existing.channel_id);
         }
     }
-    updatePanels(guild).catch(() => {});
+    updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
     return { success: true };
 }
 

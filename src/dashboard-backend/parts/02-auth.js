@@ -4,7 +4,7 @@
 // fail-closed tenant scoping that all later parts consume via ctx.
 
 const {
-    passwordMatches, checkRateLimit,
+    passwordMatches, checkRateLimit, checkBucketRateLimit,
     sessions, SESSION_TTL_MS, SESSION_MAX_MS, generateSession, sessionCookieOptions,
     getDashUsers, isDashUser,
 } = require('../core');
@@ -14,7 +14,11 @@ function register(app, ctx) {
     // Session middleware — resolves the cookie into req.authenticated and
     // re-verifies Discord sessions against dash_users on every request.
     app.use((req, res, next) => {
-        const token = req.headers.cookie?.match(/session=([^;]+)/)?.[1];
+        const token = sessionTokenFrom(req);
+        // Kept on the request so handlers can tell "this session" from the
+        // others (the session list marks it, revoking it signs the caller out)
+        // without re-parsing the cookie — checkOwner/getSessionUser reuse it.
+        req.sessionToken = token;
         if (token && sessions.has(token)) {
             const session = sessions.get(token);
             // Expired session (idle TTL or absolute max) — drop and treat as unauthenticated
@@ -24,9 +28,12 @@ function register(app, ctx) {
                 req.authenticated = false;
                 return next();
             }
-            // Re-verify Discord-logged-in users against the dash_users table
+            // Re-verify Discord-logged-in users against the dash_users table.
+            // The session holds the token's digest, not the token (see core.js),
+            // so this comparison is digest-to-digest — and it also picks up an
+            // expiry or a re-issued token, killing the session immediately.
             if (session.method === 'discord' && session.userId) {
-                if (!isDashUser(session.userId, session.accessToken)) {
+                if (!isDashUser(session.userId, session.accessToken, { fromSession: true })) {
                     sessions.delete(token);
                     req.authenticated = false;
                     return next();
@@ -44,48 +51,49 @@ function register(app, ctx) {
     });
 
     // ── Global API Rate Limiter (applies to all authenticated endpoints) ──
-    const apiLimiter = new Map();
-    const API_LIMIT_WINDOW = 60 * 1000; // 1 minute
-    const API_LIMIT_MAX = 120; // 120 requests per minute per IP
+    // Two buckets from the shared, dashboard-editable config:
+    //   api        — every /api/ request
+    //   modActions — a tighter second bucket on the destructive
+    //                /api/server/:id/mod/* routes (warn/kick/ban/timeout)
+    const EXEMPT_PATHS = new Set(['/api/login', '/api/branding', '/api/logout']);
+    const MOD_ACTION_PATH = /^\/api\/server\/[^/]+\/mod\//;
 
-    function checkApiRateLimit(ip) {
-        const now = Date.now();
-        let entry = apiLimiter.get(ip);
-        if (!entry || now - entry.windowStart > API_LIMIT_WINDOW) {
-            entry = { count: 1, windowStart: now };
-            apiLimiter.set(ip, entry);
-            return { allowed: true, remaining: API_LIMIT_MAX - 1 };
-        }
-        entry.count++;
-        if (entry.count > API_LIMIT_MAX) {
-            return { allowed: false, remaining: 0 };
-        }
-        return { allowed: true, remaining: API_LIMIT_MAX - entry.count };
+    // Mount-path note: inside app.use('/api/', …) Express trims the mount
+    // prefix, so req.path is '/login' — not '/api/login'. Comparing against
+    // req.path made the exemption list above silently dead code; always
+    // resolve the full path from originalUrl.
+    function fullPath(req) {
+        return String(req.originalUrl || req.url || '').split('?')[0];
     }
 
-    // Clean up old entries every 5 minutes
-    const apiLimiterReaper = setInterval(() => {
-        const now = Date.now();
-        for (const [ip, entry] of apiLimiter.entries()) {
-            if (now - entry.windowStart > API_LIMIT_WINDOW * 2) {
-                apiLimiter.delete(ip);
-            }
-        }
-    }, 5 * 60 * 1000);
-    apiLimiterReaper.unref();
-
-    // Apply rate limiting to all /api/ routes except login, branding, health
     app.use('/api/', (req, res, next) => {
-        const exempt = ['/api/login', '/api/branding', '/api/logout'];
-        if (exempt.includes(req.path)) return next();
-
+        const path = fullPath(req);
         const ip = req.ip || req.connection.remoteAddress || 'unknown';
-        const rateCheck = checkApiRateLimit(ip);
+
+        // 'global' caps every API request, exempt paths included — the outer
+        // ceiling that keeps a login/branding flood bounded even though those
+        // paths skip the tighter per-route buckets below.
+        const globalCheck = checkBucketRateLimit('global', ip);
+        if (!globalCheck.allowed) {
+            console.warn('[Dashboard] Global rate limit hit for IP:', ip);
+            return res.status(429).json({ success: false, error: 'Too many requests. Please slow down.' });
+        }
+        if (EXEMPT_PATHS.has(path)) return next();
+
+        const rateCheck = checkBucketRateLimit('api', ip);
         if (!rateCheck.allowed) {
             console.warn('[Dashboard] API rate limit hit for IP:', ip);
             return res.status(429).json({ success: false, error: 'Too many requests. Please slow down.' });
         }
-        res.setHeader('X-RateLimit-Limit', API_LIMIT_MAX);
+        if (MOD_ACTION_PATH.test(path) && req.method !== 'GET') {
+            const modCheck = checkBucketRateLimit('modActions', ip);
+            if (!modCheck.allowed) {
+                console.warn('[Dashboard] Mod-action rate limit hit for IP:', ip);
+                return res.status(429).json({ success: false, error: 'Too many moderation actions. Please slow down.' });
+            }
+            res.setHeader('X-RateLimit-ModActions-Remaining', modCheck.remaining);
+        }
+        res.setHeader('X-RateLimit-Limit', rateCheck.limit);
         res.setHeader('X-RateLimit-Remaining', rateCheck.remaining);
         next();
     });
@@ -114,6 +122,8 @@ function register(app, ctx) {
             if (existing && existing.active && !existing.hasToken) {
                 return res.status(401).json({ success: false, error: 'This user needs a new access token. Run /dashaccess remove ' + discordId + ' then /dashaccess add @user again.' });
             }
+            // Raw token, straight from the login form — the only path allowed to
+            // present one. sessions.set() digests it before it touches disk.
             if (isDashUser(discordId, accessToken)) {
                 const token = generateSession();
                 sessions.set(token, { method: 'discord', userId: discordId, accessToken, expiresAt, createdAt: now });
@@ -124,8 +134,15 @@ function register(app, ctx) {
         res.status(401).json({ success: false, error: 'Invalid credentials' });
     });
 
+    // One place resolves the session cookie. The middleware below is the only
+    // caller on the request path; everything downstream reads req.sessionToken,
+    // which the middleware sets for every request (authenticated or not).
+    function sessionTokenFrom(req) {
+        return req.headers.cookie?.match(/session=([^;]+)/)?.[1] || null;
+    }
+
     app.post('/api/logout', (req, res) => {
-        const token = req.headers.cookie?.match(/session=([^;]+)/)?.[1];
+        const token = sessionTokenFrom(req);
         if (token) sessions.delete(token);
         res.clearCookie('session', { path: '/' });
         res.json({ success: true });
@@ -151,7 +168,7 @@ function register(app, ctx) {
     function checkOwner(req, _res) {
         // For password-authenticated sessions, allow mod actions
         // For Discord-authenticated sessions, check if the user is the bot owner
-        const token = req.headers.cookie?.match(/session=([^;]+)/)?.[1];
+        const token = req.sessionToken || sessionTokenFrom(req);
         if (!token || !sessions.has(token)) return false;
         const session = sessions.get(token);
         if (session.method === 'password') return true; // password = full access
@@ -160,7 +177,7 @@ function register(app, ctx) {
     }
 
     function getSessionUser(req) {
-        const token = req.headers.cookie?.match(/session=([^;]+)/)?.[1];
+        const token = req.sessionToken || sessionTokenFrom(req);
         if (!token || !sessions.has(token)) return 'unknown';
         const session = sessions.get(token);
         return session.userId || process.env.OWNER_ID || 'dashboard';
@@ -173,8 +190,7 @@ function register(app, ctx) {
     // with zero grants.
     function getScopedGuildIds(req) {
         if (checkOwner(req)) return null;
-        const token = req.headers.cookie?.match(/session=([^;]+)/)?.[1];
-        const session = token ? sessions.get(token) : null;
+        const session = req.sessionToken ? sessions.get(req.sessionToken) : null;
         if (!session || session.method !== 'discord' || !session.userId) return new Set();
         const db = require('../../db').getDb();
         return new Set(db.prepare('SELECT guild_id FROM dash_user_guilds WHERE user_id = ?')

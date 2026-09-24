@@ -2,6 +2,32 @@
 
 const LOG_CATEGORIES = ['messages', 'reactions', 'members', 'roles', 'server', 'voice', 'threads', 'emojis', 'bans', 'moderation', 'invites', 'stickers', 'automod', 'scheduled', 'stage', 'applications', 'webhooks', 'integrations'];
 
+// Human-readable names for the Discord command choices. Single source of
+// truth: deploy.js builds its /log choice lists from LOG_CATEGORIES +
+// this map, so a new category can never be added to the dispatcher without
+// also becoming selectable from Discord (that drift is exactly how
+// `moderation` and `applications` ended up unreachable at one point).
+const LOG_CATEGORY_LABELS = {
+    messages: 'Messages',
+    reactions: 'Reactions',
+    members: 'Members',
+    roles: 'Roles',
+    server: 'Server',
+    voice: 'Voice',
+    threads: 'Threads',
+    emojis: 'Emojis',
+    bans: 'Bans',
+    moderation: 'Moderation',
+    invites: 'Invites',
+    stickers: 'Stickers',
+    automod: 'Auto Mod',
+    scheduled: 'Scheduled',
+    stage: 'Stage',
+    applications: 'Applications',
+    webhooks: 'Webhooks',
+    integrations: 'Integrations',
+};
+
 const CATEGORY_EMOJIS = {
     messages: '\uD83D\uDCE8',
     reactions: '\uD83D\uDC4D',
@@ -251,6 +277,7 @@ const PERM_NAMES = {
 
 module.exports = {
     LOG_CATEGORIES,
+    LOG_CATEGORY_LABELS,
     CATEGORY_EMOJIS,
     WS_STATUS,
     CHANNEL_TYPE_NAMES,

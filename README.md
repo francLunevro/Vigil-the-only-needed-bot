@@ -4,11 +4,11 @@
 
 **Replace Carl-bot, Dyno, and Ticket Tool with one self-hosted Node process.**
 
-Moderation with case files · 16-category logging · tickets with transcripts · a full web dashboard · zero subscriptions, ever
+Moderation with case files · 18-category logging · tickets with transcripts · a full web dashboard · zero subscriptions, ever
 
-[![CI](https://github.com/mohammad213gh/Vigil/actions/workflows/ci.yml/badge.svg)](https://github.com/mohammad213gh/Vigil/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-3fb950)](#testing)
-[![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![CI](https://github.com/francLunevro/Vigil-the-only-needed-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/francLunevro/Vigil-the-only-needed-bot/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-350%20passing-3fb950)](#testing)
+[![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Discord.js](https://img.shields.io/badge/discord.js-v14-5865F2?logo=discord&logoColor=white)](https://discord.js.org)
 [![License](https://img.shields.io/badge/license-Community%20Source-5865F2)](LICENSE)
 
@@ -98,15 +98,15 @@ The standard suite, with the detail that separates a real mod bot from a toy: **
 - `/case 12` — one case in detail
 - `/reason 12 appeal approved, lifted early` — amend a case's reason later, so the audit trail stays honest when a punishment gets reversed
 
-### 📜 Logging — 16 categories, ~40 event types
+### 📜 Logging — 18 categories, ~40 event types
 
 Here's what a log entry actually looks like in your mod channel (a real one, not a mockup):
 
 <p align="center"><img src="docs/screenshots/log-embed.png" alt="A Vigil log embed in Discord: a voice channel creation event, with the actor, channel name, type, and ID laid out cleanly" width="420"></p>
 
-The 16 categories, each independently routed and toggleable:
+The 18 categories, each independently routed and toggleable — the same list backs `/log`, the dashboard, and the dispatcher, so a category can't exist in one place and be missing from another:
 
-`messages` · `reactions` · `members` · `roles` · `server` · `voice` · `threads` · `emojis` · `bans` · `invites` · `stickers` · `automod` · `scheduled` · `stage` · `webhooks` · `integrations`
+`messages` · `reactions` · `members` · `roles` · `server` · `voice` · `threads` · `emojis` · `bans` · `moderation` · `invites` · `stickers` · `automod` · `scheduled` · `stage` · `applications` · `webhooks` · `integrations`
 
 Per category, you control:
 
@@ -214,7 +214,7 @@ Fake or vanity join codes resolve to the real code in the logs.
 
 ### 📊 Polls, announcements, reminders
 
-- `/poll` — up to 4 options, `multi` and `anonymous` modes, optional timed auto-finalize
+- `/poll` — up to 4 options, `multi` and `anonymous` modes, optional timed auto-finalize (restart-safe: a sweep finishes any timed poll whose end passed while the bot was offline)
 - `/announce` — titled, colored announcement embed to any channel
 - `/remindme 30s drink water` — DMs you later; `30s` `5m` `2h` `1d` `1h30m` all parse. Persistent across restarts. `/reminders list` / `cancel`
 
@@ -305,7 +305,7 @@ Pick a server from **Servers**, then:
 - **Bot activity** — uptime, memory, event counters over time
 - **Error log** — the bot's console, searchable and filterable
 - **Backups** — one-click SQLite backups with integrity verification and download
-- **Dashboard access** — grant/revoke Discord-ID logins
+- **Dashboard access** — grant/revoke Discord-ID logins, and see every active session with per-session revoke ("that one isn't me — sign it out") without touching anyone's password or token
 - **Bot customization** — name, avatar, presence, brand name
 - **Settings** — theme, accent color, fonts, radius, background, plus a look switcher (Neo / Classic / Minimal)
 
@@ -321,11 +321,11 @@ Pick a server from **Servers**, then:
 
 ## Quick start
 
-**You need three things:** Node.js 20 or newer, a bot token from the [Discord Developer Portal](https://discord.com/developers/applications), and the bot invited with the `applications.commands` scope. Five minutes, all told.
+**You need three things:** Node.js 22 or newer (22, 24 and 26 are all tested in CI), a bot token from the [Discord Developer Portal](https://discord.com/developers/applications), and the bot invited with the `applications.commands` scope. Five minutes, all told.
 
 ```bash
-git clone https://github.com/mohammad213gh/Vigil.git
-cd Vigil
+git clone https://github.com/francLunevro/Vigil-the-only-needed-bot.git
+cd Vigil-the-only-needed-bot
 npm install
 cp .env.example .env      # then fill in BOT_TOKEN, OWNER_ID, DASHBOARD_PASSWORD
 npm start
@@ -401,7 +401,7 @@ A daily sweeper (plus a catch-up run at boot) prunes the unbounded tables:
 | `activity_counts` (inactive entries) | 180 days |
 | `ticket_messages` | 365 days after the ticket closes — transcripts are snapshotted at close, so the record survives |
 
-Invite stats are deliberately never pruned (the leaderboard *is* the point); growth snapshots self-cap at 90 days; the error log holds the most recent 500 entries.
+Invite stats are deliberately never pruned (the leaderboard *is* the point); growth snapshots self-cap at 90 days; the error log holds the most recent 500 entries; the message log for search keeps the newest 1,000 per server (pruned on a throttle rather than on every delete, so it can overshoot the cap slightly under a burst); and the dashboard activity feed keeps the last 10,000 events.
 
 ### Backups
 
@@ -448,9 +448,15 @@ src/
 ├── invites.js            Invite-code tracking
 ├── stats.js              Growth snapshots, join/leave recording
 ├── staffNotes.js         Private staff notes
-├── logging.js            The 16-category log dispatcher
+├── logging.js            The 18-category log dispatcher
 ├── logError.js           Error logging (DB + console)
 ├── helpers.js            Formatting, truncation, ownership checks
+├── interactions/         Button / modal / select handlers:
+│   ├── index.js          Router — dispatches by customId prefix, initiator check
+│   ├── moderation.js     kick / ban / temp-ban / purge confirms + warn modal
+│   ├── polls.js          Poll voting + voter list
+│   ├── tickets.js        Ticket create / close / claim / rate / transfer / add-user
+│   └── tempVoice.js      Temp-VC panel buttons + rename/limit modals
 ├── commands/             One file per command group
 │   └── registry.js       Maps command names → handlers (the wiring hub)
 ├── events/               ready, messages, reactions, members, roles,
@@ -504,28 +510,52 @@ A war story, because it explains how this code is written: early on, a single un
 
 ## Testing
 
-**160 tests** via `node --test`, plus ESLint and the frontend data-args verifier, on every push — on **both Node 20 and 22** in GitHub Actions:
+**350 tests** via `node --test`, plus ESLint and the frontend data-args verifier, on every push — on **Node 22, 24 and 26** in GitHub Actions:
 
 | Suite | What's covered |
 |---|---|
 | `db.test.js` | Schema creation, error logs, retention pruning, backups |
 | `migrations.test.js` | Fresh-DB migration, idempotent re-open, self-healing legacy upgrades |
 | `deploy.test.js` | Command definitions well-formed |
+| `deploy-log-categories.test.js` | `/log` offers exactly the dispatcher's categories — guards the drift that once hid `moderation` and `applications` |
+| `commandPipeline.test.js` | The shared execution path: dispatch, owner guard, persistent cooldowns, usage tracking, friendly-error mapping |
+| `permissions.test.js` | Per-command grants: guild/command/user scoping, idempotent grants, immediate revocation, fail-closed defaults |
 | permissions / automod | Grants & the rule engine |
 | `tickets` / `banAppeals` | Lifecycle, transcripts, appeals |
 | `prefixCommands` / `prefixAdapter` | Prefix dispatcher, message→interaction shim, shared pipeline routing, cooldowns, gating |
 | `dashboard.test.js` | Boots, `/health` correct |
 | `dashboard-auth.test.js` | Cookie flags, owner gating, fail-closed tenant scoping, idle TTL, absolute cap, revocation, logout |
 | `dashboard-ratelimit.test.js` | 10 logins/min/IP, then 429 |
+| `ratelimit-config.test.js` | The Rate Limits panel drives real enforcement; buckets stay independent; junk config falls back to defaults |
+| `color-helpers.test.js` | One canonical colour parser, decimal-vs-hex storage forms |
+| `message-log-retention.test.js` | Retention keeps the newest rows (including the same-millisecond tie case) and stays throttled |
 | `dashboard-frontend.test.js` | **The real frontend boots**: jsdom globals + dynamic import of the actual module graph, asserting the full boot chain completes with zero uncaught errors |
 | giveaways / tempVoice / voicePresence / serverStats | The background systems |
 
 ```bash
 npm test                              # the full suite
+npm run test:coverage                 # same suite + a line/branch coverage report
 npm run lint                          # ESLint
 node scripts/verify-data-args.mjs     # frontend data-args contract (also in CI)
 node scripts/analyze-modules.mjs      # frontend module graph check
 ```
+
+**Coverage, honestly.** `npm run test:coverage` reports **47.9% of lines** (71.3% branches, 50.8% functions), and that one number hides how uneven the suite is: the shared infrastructure is covered hard, the command handlers and the dashboard UI are not. Where it lands on current `main`:
+
+| Area | Line coverage |
+|---|---|
+| `commands/registry.js`, `deploy.js` (command schema) | 97–100% |
+| `permissions.js` (per-command grants) | 96% |
+| `commandPipeline.js` (the shared execution path) | 94% |
+| `interactions/` (buttons/modals/selects) | 87–99% |
+| `db.js` (schema, migrations, backups) | 79% |
+| `prefixAdapter.js` (prefix argument parsing) | 75% |
+| `helpers.js` | 42% |
+| `tickets.js`, `stats.js`, `invites.js`, `reminders.js` | 21–26% |
+| `src/commands/*` (the command handlers themselves) | 4–12% |
+| dashboard frontend (`src/dashboard/parts/*.mjs`) | 6–40% |
+
+Read that honestly: refactors of the command pipeline, permission model, deploy schema and DB layer are well guarded; new **command** logic and dashboard behaviour mostly are not. A green run is strong evidence for the infrastructure and weak evidence for those — raising coverage there is the highest-value testing work left.
 
 **What the tests don't cover, and I want to be straight about:** there's no real-browser testing here. No click-through automation. Green CI means nothing obviously broke — it does not mean the new feature works in your browser. I've shipped bugs that only showed up in production. So after an update, spend two minutes actually clicking through the dashboard. That's the real test.
 
@@ -535,15 +565,23 @@ node scripts/analyze-modules.mjs      # frontend module graph check
 
 The dashboard is the sensitive surface; it gets real treatment:
 
-- **Rate-limited login** — 10 attempts/min per IP, plus a global API rate limit. Rate limits key on the real client IP: `X-Forwarded-For` is only trusted from local/private proxy peers (see `TRUST_PROXY`), so a bare VPS deploy can't be bypassed by rotating the header
-- **Two login modes** — shared password, or per-user Discord-ID tokens granted via `/dashaccess` (tokens stored hashed, shown exactly once)
+- **Rate-limited everywhere** — four independently configurable buckets (Dashboard → System → Rate limits): a global ceiling, login at 10 attempts/min per IP, an API budget, and a tighter one for destructive mod actions. Limits key on the real client IP: `X-Forwarded-For` is only trusted from local/private proxy peers (see `TRUST_PROXY`), so a bare VPS deploy can't be bypassed by rotating the header
+- **Two login modes** — shared password, or per-user Discord-ID tokens granted via `/dashaccess` (tokens stored hashed, shown exactly once, and expiring after 90 days by default — `DASHBOARD_TOKEN_DAYS`)
+- **A leaked database backup is not a login.** Access tokens are stored only as SHA-256 digests, and a session row holds that same digest rather than the token, so a digest can't be replayed against the login route. The dashboard shows each token's **last used** date and expiry, so a token being used that shouldn't be is visible rather than silent
 - **Constant-time password comparison**; random session tokens; sessions die instantly when access is revoked
 - **Session hygiene** — HttpOnly + SameSite=Strict cookies, an idle TTL *and* an absolute cap; sliding renewal can't outlive the cap
 - **Fail-closed tenant scoping** — every `/api/server/:id/...` route verifies the session may act on that server; scoped users with zero grants see zero servers
 - **Parameterized SQL everywhere**; **CSP** with no `unsafe-inline` scripts; uploads type/size-validated
 - **Audit trail** for sensitive dashboard actions
 
-**What it doesn't protect against:** the main login is one shared password that lives in your `.env`. Sessions sit in memory, so a restart logs everyone out. That's fine for a self-hosted bot and it is not enterprise SSO, and I'm not going to pretend otherwise. If that bothers you, put the dashboard behind your host's access controls — and don't reuse that password anywhere else, obviously.
+**What it doesn't protect against:** the main login is one shared password that lives in your `.env`. That's fine for a self-hosted bot and it is not enterprise SSO, and I'm not going to pretend otherwise. If that bothers you, put the dashboard behind your host's access controls — and don't reuse that password anywhere else, obviously.
+
+**Operational limits worth knowing before you expose it publicly:**
+
+- **There is no Redis, and nothing that needs one.** Sessions and rate-limit windows live in the same SQLite file as everything else, so a restart no longer logs anyone out and a blocked client can't win a fresh budget by catching a deploy. The trade-off is the opposite one: replicas sharing one process *and* one database is now coherent, but they must share a filesystem (or a network mount) — for a multi-host setup you'd want the database itself somewhere shared.
+- **Privileged intents cap how big you can get.** Prefix commands need `MessageContent`, and the presence features need `GuildPresences`. Both are privileged: past 100 servers Discord requires verification/whitelisting, and past 2,500 you must shard. If you need a higher ceiling, use slash commands and turn the presence features off.
+- **The dashboard password is full owner power**, including bulk import and API-token creation. For anyone who isn't you, hand out a `/dashaccess` token instead and scope it to specific servers.
+- **Your `DATA_DIR` is the whole database.** No external store, no replication — the backups in `DATA_DIR/backups` are your recovery plan. Keep that volume private and persistent.
 
 ---
 
@@ -607,7 +645,7 @@ Privileged intents are off in the Developer Portal, or the bot wasn't re-invited
 Open the Error log panel (System) — it's the bot's own console; the real API error is in there.
 
 **Won't boot; the error mentions SQLite.**
-`better-sqlite3` is a native module and compiles per Node version. Run `npm install` on the target machine (CI pins Node 20/22; `.nvmrc` says 20).
+`better-sqlite3` is a native module and compiles per Node version. Run `npm install` on the target machine (CI runs Node 22/24/26; `.nvmrc` pins 24).
 
 **Won't boot; the error mentions a migration.**
 A migration failed for a real reason — locked file, full disk, corrupted page. This fails loudly *on purpose*; fix the cause and restart. Migrations re-run cleanly.
@@ -616,7 +654,7 @@ A migration failed for a real reason — locked file, full disk, corrupted page.
 Yes. Global commands work everywhere, configs are per-server, and the dashboard has a server switcher plus a comparison view.
 
 **Does it survive restarts?**
-Data: yes — SQLite, and temp bans, giveaways, and reminders are all DB-backed. Sessions: no — dashboard logins are in-memory by design; log in again after a restart.
+Data: yes — SQLite, and temp bans, giveaways, and reminders are all DB-backed. Sessions and rate-limit windows: yes too — dashboard logins in `dashboard_sessions` survive a restart, so you stay signed in across one.
 
 **How do I update the bot?**
 `git pull` → `npm install` → restart → `/deploy` if commands changed. Take a dashboard backup first (ten seconds). Migrations apply themselves on boot.

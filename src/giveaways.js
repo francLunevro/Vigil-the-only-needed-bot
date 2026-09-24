@@ -226,7 +226,7 @@ function winnersAnnouncement(winnerIds, prize) {
 
 async function postGiveaway(channel, g) {
     const msg = await channel.send({ embeds: [buildActiveEmbed(g)] });
-    await msg.react(GW_EMOJI).catch(() => {});
+    await msg.react(GW_EMOJI).catch((err) => logError(err, 'giveaways', 'react'));
     getDb().prepare('UPDATE giveaways SET message_id = ? WHERE id = ?').run(msg.id, g.id);
     return getGiveaway(g.id);
 }
@@ -265,8 +265,8 @@ async function endGiveaway(id, opts = {}) {
     const ended = getGiveaway(id);
     if (message && opts.announce !== false) {
         try {
-            await message.edit({ embeds: [buildEndedEmbed(ended, winnerIds)] }).catch(() => {});
-            await message.channel.send({ content: winnersAnnouncement(winnerIds, ended.prize) }).catch(() => {});
+            await message.edit({ embeds: [buildEndedEmbed(ended, winnerIds)] }).catch((err) => logError(err, 'giveaways', 'announce_edit'));
+            await message.channel.send({ content: winnersAnnouncement(winnerIds, ended.prize) }).catch((err) => logError(err, 'giveaways', 'announce_send'));
         } catch (err) { logError(err, 'giveaways', 'announce'); }
     }
 
@@ -303,8 +303,8 @@ async function rerollGiveaway(id) {
     const updated = getGiveaway(id);
     if (message) {
         try {
-            await message.edit({ embeds: [buildEndedEmbed(updated, newWinners)] }).catch(() => {});
-            await message.channel.send({ content: '🔁 Reroll — ' + winnersAnnouncement(newWinners, updated.prize) }).catch(() => {});
+            await message.edit({ embeds: [buildEndedEmbed(updated, newWinners)] }).catch((err) => logError(err, 'giveaways', 'reroll_edit'));
+            await message.channel.send({ content: '🔁 Reroll — ' + winnersAnnouncement(newWinners, updated.prize) }).catch((err) => logError(err, 'giveaways', 'reroll_send'));
         } catch (err) { logError(err, 'giveaways', 'reroll_announce'); }
     }
 
@@ -329,9 +329,9 @@ async function checkGiveaways() {
 let checkInterval = null;
 function startGiveawayCheck() {
     if (checkInterval) return;
-    checkInterval = setInterval(() => { checkGiveaways().catch(() => {}); }, 15 * 1000);
+    checkInterval = setInterval(() => { checkGiveaways().catch((err) => logError(err, 'giveaways', 'checkGiveaways')); }, 15 * 1000);
     // Sweep giveaways that ended while the bot was offline.
-    setTimeout(() => { checkGiveaways().catch(() => {}); }, 5000);
+    setTimeout(() => { checkGiveaways().catch((err) => logError(err, 'giveaways', 'checkGiveaways')); }, 5000);
 }
 
 function stopGiveawayCheck() {

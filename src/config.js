@@ -1,5 +1,6 @@
 const { LOG_CATEGORIES } = require('./constants');
 const { getDb } = require('./db');
+const { logWarn } = require('./logError');
 
 // ──────────────────── Default Config ────────────────────
 
@@ -72,6 +73,56 @@ function createDefaultConfig() {
     };
 }
 
+// ──────────────────── Embed color helpers ────────────────────
+// guild_config.embed_color is stored as the decimal string of the color int
+// (e.g. "5815782" for #58B9F2). Historic rows/dashboard saves may hold legacy
+// "#58B9F2"-style strings or garbage; normalize everything on the way in/out
+// so consumers always receive an int (0-0xFFFFFF) or null.
+// Bare pure-digit strings are parsed as DECIMAL (the canonical storage
+// format — a 24-bit color is up to 8 decimal digits, more than 6 hex ones);
+// strings with a # prefix or hex letters are parsed as hex, with 3-digit
+// shorthand expanded CSS-style ('#abc' → 0xAABBCC).
+function hexColorToInt(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') {
+        return (Number.isInteger(value) && value >= 0 && value <= 0xFFFFFF) ? value : null;
+    }
+    const s = String(value).trim();
+    if (s === '') return null;
+    const hexBody = s.startsWith('#') ? s.slice(1) : s;
+    const isHexForm = s.startsWith('#') || /[a-fA-F]/.test(hexBody);
+    if (!isHexForm) {
+        if (!/^\d+$/.test(s)) return null;
+        const n = Number(s);
+        return (n >= 0 && n <= 0xFFFFFF) ? n : null;
+    }
+    if (!/^[0-9a-fA-F]{3}$/.test(hexBody) && !/^[0-9a-fA-F]{6}$/.test(hexBody)) return null;
+    const expanded = hexBody.length === 3
+        ? hexBody[0] + hexBody[0] + hexBody[1] + hexBody[1] + hexBody[2] + hexBody[2]
+        : hexBody;
+    const n = parseInt(expanded, 16);
+    return (isNaN(n) || n < 0 || n > 0xFFFFFF) ? null : n;
+}
+
+function intToHexString(n) {
+    return (typeof n === 'number' && n >= 0 && n <= 0xFFFFFF)
+        ? '#' + n.toString(16).padStart(6, '0')
+        : null;
+}
+
+// Strict hex-form parser for the colors that commands, the dashboard and the
+// DB all store as display strings ('#RRGGBB' / 'RRGGBB') — ticket panel
+// colors, greeting embed colors. Unlike hexColorToInt() above it deliberately
+// does NOT accept bare decimal strings, so a value like '5865F2' is parsed as
+// hex (the intent) instead of decimal.
+function displayColorToInt(value, fallback = null) {
+    if (typeof value !== 'string') return fallback;
+    const body = value.trim().replace(/^#/, '');
+    if (!/^[0-9a-fA-F]{6}$/.test(body)) return fallback;
+    const n = parseInt(body, 16);
+    return (isNaN(n) || n < 0 || n > 0xFFFFFF) ? fallback : n;
+}
+
 function parseGuildRow(row) {
     if (!row) return null;
     return {
@@ -80,7 +131,7 @@ function parseGuildRow(row) {
         logCategories: JSON.parse(row.log_categories || '{}'),
         trackedChannels: JSON.parse(row.tracked_channels || '[]'),
         prefix: row.prefix || ';',
-        embedColor: row.embed_color ? parseInt(row.embed_color) : null,
+        embedColor: hexColorToInt(row.embed_color),
         welcomeConfig: JSON.parse(row.welcome_config || '{}'),
     };
 }
@@ -120,6 +171,7 @@ function getGuildConfig(guildId) {
 
 function updateGuildConfigRaw(guildId, g) {
     const db = getDb();
+    const colorInt = hexColorToInt(g.embedColor);
     db.prepare(`
         UPDATE guild_config SET
             default_channel = ?,
@@ -136,15 +188,33 @@ function updateGuildConfigRaw(guildId, g) {
         JSON.stringify(g.logChannels || {}),
         JSON.stringify(g.logCategories || {}),
         g.prefix || ';',
-        g.embedColor ? String(g.embedColor) : null,
+        colorInt !== null ? String(colorInt) : null,
         JSON.stringify(g.welcomeConfig || {}),
         guildId
     );
 }
 
+// Every key updateGuildConfigRaw() persists. Updaters mutate a plain object,
+// so a typo (cfg.embed_color = x instead of cfg.embedColor = x) used to
+// persist nothing and say nothing — that exact bug shipped once. Warn loudly
+// on unknown keys so the next one shows up in the logs instead of silently
+// doing nothing.
+const GUILD_CONFIG_KEYS = new Set([
+    'logChannelId', 'logChannels', 'logCategories', 'trackedChannels',
+    'prefix', 'embedColor', 'welcomeConfig',
+]);
+
+function warnUnknownGuildConfigKeys(guildId, cfg) {
+    for (const key of Object.keys(cfg || {})) {
+        if (GUILD_CONFIG_KEYS.has(key)) continue;
+        logWarn(`Unknown guild_config key "${key}" was set and will not be persisted`, 'config', `guild=${guildId}`);
+    }
+}
+
 function updateGuildConfig(guildId, updater) {
     const g = getGuildConfig(guildId);
     const updated = updater(g);
+    warnUnknownGuildConfigKeys(guildId, updated);
     updateGuildConfigRaw(guildId, updated);
     return updated;
 }
@@ -188,6 +258,7 @@ function saveConfig(config) {
                 continue;
             }
             if (typeof val === 'object' && val !== null) {
+                const colorInt = hexColorToInt(val.embedColor);
                 upsert.run(
                     key,
                     val.logChannelId || null,
@@ -195,7 +266,7 @@ function saveConfig(config) {
                     JSON.stringify(val.logChannels || {}),
                     JSON.stringify(val.logCategories || {}),
                     val.prefix || ';',
-                    val.embedColor ? String(val.embedColor) : null,
+                    colorInt !== null ? String(colorInt) : null,
                     JSON.stringify(val.welcomeConfig || {})
                 );
             }
@@ -247,4 +318,7 @@ module.exports = {
     getWelcomeConfig,
     getGoodbyeConfig,
     updateWelcomeConfig,
+    hexColorToInt,
+    intToHexString,
+    displayColorToInt,
 };

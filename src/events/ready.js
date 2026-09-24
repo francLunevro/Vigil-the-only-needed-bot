@@ -1,3 +1,5 @@
+const { logError } = require('../logError');
+
 module.exports = {
     name: 'ready',
     once: true,
@@ -23,12 +25,18 @@ module.exports = {
         // Waits a few seconds for the guild cache to settle after login, with
         // a second pass in case a guild wasn't cached yet.
         const { restoreAllPresences } = require('../voicePresence');
-        setTimeout(() => restoreAllPresences(client).catch(() => {}), 3000);
-        setTimeout(() => restoreAllPresences(client).catch(() => {}), 30000);
+        setTimeout(() => restoreAllPresences(client).catch((err) => logError(err, 'voicePresence', 'ready_restore')), 3000);
+        setTimeout(() => restoreAllPresences(client).catch((err) => logError(err, 'voicePresence', 'ready_restore')), 30000);
 
         // Clean up temp voice channels that died while the bot was offline
         // (delete empty leftovers, drop rows for deleted channels).
         const { cleanupOrphans } = require('../tempVoice');
-        setTimeout(() => cleanupOrphans(client).catch(() => {}), 5000);
+        setTimeout(() => cleanupOrphans(client).catch((err) => logError(err, 'tempvoice', 'ready_cleanup_orphans')), 5000);
+
+        // Restart-safe auto-end for timed polls: sweep anything due (including
+        // polls whose end passed while the bot was offline) every 30s.
+        const polls = require('../interactions/polls');
+        polls.setPollClient(client);
+        polls.startPollCheck();
     },
 };

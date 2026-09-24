@@ -11,6 +11,7 @@ const {
 } = require('discord.js');
 const { getDb } = require('./db');
 const { logError } = require('./logError');
+const { displayColorToInt } = require('./config');
 
 let client = null;
 
@@ -20,17 +21,14 @@ function setTicketClient(c) {
 
 // ──────────────────── Colors ────────────────────
 
+// Panel and type colors are '#RRGGBB' display strings; the parser lives in
+// config.js (displayColorToInt) so tickets, greetings and the dashboard all
+// agree on what a color string means.
 const TICKET_COLORS = {
     open: 0x5865F2,
     closed: 0xE74C3C,
     claimed: 0xF1C40F,
 };
-
-function hexToInt(hex) {
-    if (!hex) return 0x5865F2;
-    const clean = hex.replace('#', '');
-    return parseInt(clean, 16) || 0x5865F2;
-}
 
 // ──────────────────── Global Config ────────────────────
 
@@ -195,7 +193,7 @@ async function sendTicketPanel(panelInput, channel) {
     const types = getPanelTypes(panel.id);
 
     const embed = new EmbedBuilder()
-        .setColor(hexToInt(panel.color))
+        .setColor(displayColorToInt(panel.color, TICKET_COLORS.open))
         .setAuthor({ name: guild.name, iconURL: guild.iconURL() })
         .setTitle('🎫 ' + (panel.name || 'Support Tickets'))
         .setDescription(panel.description || 'Click the button below to create a ticket.')
@@ -342,7 +340,7 @@ async function createTicket(guild, creator, panelType, answers) {
     const supportRoleMentions = supportRoleIds.map(id => '<@&' + id + '>').join(' ');
 
     const welcomeEmbed = new EmbedBuilder()
-        .setColor(hexToInt(type.color) || TICKET_COLORS.open)
+        .setColor(displayColorToInt(type.color, TICKET_COLORS.open))
         .setAuthor({ name: 'Ticket #' + ticketNumber, iconURL: guild.iconURL() })
         .setTitle('🎫 ' + type.name + ' Ticket')
         .setDescription(type.welcome_message || 'Thank you for creating a ticket. A staff member will be with you shortly.')
@@ -356,7 +354,7 @@ async function createTicket(guild, creator, panelType, answers) {
     // Pin the answers embed to keep it visible (Feature 6 - Ticket Tool style)
     if (answers && Array.isArray(answers) && answers.length > 0) {
         const answersEmbed = new EmbedBuilder()
-            .setColor(hexToInt(type.color) || TICKET_COLORS.open)
+            .setColor(displayColorToInt(type.color, TICKET_COLORS.open))
             .setTitle('📋 Ticket Form Answers')
             .setDescription('Questions and answers submitted when creating this ticket:')
             .setFooter({ text: 'Ticket #' + ticketNumber })
@@ -600,7 +598,7 @@ async function closeTicketById(guild, channel, closer, reason, ticket) {
             const skipRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('tk_rateskip_' + ticket.id).setLabel('Skip').setStyle(ButtonStyle.Secondary)
             );
-            await creator.send({ embeds: [dmEmbed], components: [ratingRow, skipRow] }).catch(() => {});
+            await creator.send({ embeds: [dmEmbed], components: [ratingRow, skipRow] }).catch((err) => logError(err, 'tickets', 'rating_dm'));
         }
     } catch {}
 
@@ -634,7 +632,7 @@ async function claimTicket(guild, channel, claimer) {
         new ButtonBuilder().setCustomId('tk_transfer_' + ticket.id).setLabel('Transfer').setStyle(ButtonStyle.Primary).setEmoji('🔄'),
         new ButtonBuilder().setCustomId('tk_close_' + ticket.id).setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
     );
-    await channel.send({ components: [actionRow] }).catch(() => {});
+    await channel.send({ components: [actionRow] }).catch((err) => logError(err, 'tickets', 'claim_buttons'));
 
     // Broadcast SSE for dashboard
     try {
@@ -675,7 +673,7 @@ async function removeUserFromTicket(guild, channel, remover, targetUser) {
     const ticket = db.prepare('SELECT * FROM tickets WHERE channel_id = ? AND guild_id = ?').get(channel.id, guild.id);
     if (!ticket) return { error: 'No ticket found for this channel.' };
     try {
-        await channel.permissionOverwrites.delete(targetUser).catch(() => {});
+        await channel.permissionOverwrites.delete(targetUser).catch((err) => logError(err, 'tickets', 'removeUser_overwrite_delete'));
         const embed = new EmbedBuilder().setColor(TICKET_COLORS.closed)
             .setDescription('➖ ' + String(targetUser) + ' has been removed from this ticket by **' + remover.tag + '**').setTimestamp();
         await channel.send({ embeds: [embed] });
@@ -767,7 +765,7 @@ async function saveTranscript(guild, ticket, channel) {
                     await logChannel.send({
                         embeds: [transcriptEmbed],
                         files: [{ attachment: Buffer.from(transcript), name: 'ticket-' + ticket.ticket_number + '-' + guild.id + '.txt' }],
-                    }).catch(() => {});
+                    }).catch((err) => logError(err, 'tickets', 'transcript_send'));
                 }
             } catch {}
         }

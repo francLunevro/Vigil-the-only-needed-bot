@@ -12,7 +12,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        # 22 = oldest supported (engines floor), 24 = current LTS (what the
+        # Docker image runs), 26 = current, which is what most contributors
+        # are on locally. Node 20 shipped EOL in April 2026 and the pinned
+        # better-sqlite3 has no Node 20 (ABI 115) prebuild any more.
+        node: [22, 24, 26]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +43,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies

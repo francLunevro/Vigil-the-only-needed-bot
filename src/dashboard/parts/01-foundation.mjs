@@ -1,4 +1,6 @@
 
+import { themeSweep } from './11-motion.mjs';
+
 // ═══ BACKGROUND ENGINES ═══
 const bgCanvas=document.getElementById('bgCanvas'),bgCtx=bgCanvas.getContext('2d');
 export let bgEngine=null,bgStyle='dots',bgAnimId=null;
@@ -196,7 +198,10 @@ function applyCfg(c){
 export function previewColor(h){const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);document.documentElement.style.setProperty('--accent',h);document.documentElement.style.setProperty('--accent-rgb',r+','+g+','+b);document.getElementById('dashColor').value=h;document.getElementById('colorVal').textContent=h}
 export function previewTitle(v){document.getElementById('dashTitlePg').textContent=v||'Overview'}
 function applyTheme(isDark){document.body.classList.toggle('light-mode',!isDark);darkMode=isDark;const lb=document.getElementById('themeLabel'),ti=document.getElementById('themeIcon'),tg=document.getElementById('themeToggle'),nti=document.getElementById('ntThemeIcon'),ntl=document.getElementById('ntMobileThemeLabel');if(lb)lb.textContent=isDark?'Light Mode':'Dark Mode';if(ti)ti.innerHTML=isDark?'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>':'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';if(tg)tg.classList.toggle('on',isDark);if(nti)nti.innerHTML=isDark?'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>':'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';if(ntl)ntl.textContent=isDark?'Light Mode':'Dark Mode'}
-export function toggleTheme(){applyTheme(!darkMode)}
+// The flip itself runs inside an animated view transition (see 11-motion.mjs);
+// the origin is wherever the user last clicked, so the theme pours out of the
+// button pressed. Reduced-motion / no-View-Transition browsers flip instantly.
+export function toggleTheme(){themeSweep(()=>applyTheme(!darkMode))}
 // ═══ SETTINGS TOGGLES THAT AFFECT THE PAGE LIVE ═══
 // "Show Section Labels" — hides nav labels via body.labels-off; mirrored in localStorage.
 export function applyLabelPref(){let off=false;try{off=localStorage.getItem('navLabels')==='off'}catch(e){}const t=document.getElementById('labelToggle');if(t)t.classList.toggle('on',!off);document.body.classList.toggle('labels-off',off)}
@@ -506,6 +511,16 @@ export function saveErrorAlert(){
 }
 
 // ═══ SETTINGS: DASHBOARD ACCESS ═══
+// Token expiry is always in the future, which tkTimeAgo can't express (it only
+// counts backwards), so time-until gets its own helper.
+function tkTimeUntil(ts){
+  if(!ts)return '';
+  var s=Math.floor((new Date(ts).getTime()-Date.now())/1000);
+  if(s<=0)return 'now';
+  if(s<3600)return 'in '+Math.floor(s/60)+'m';
+  if(s<86400)return 'in '+Math.floor(s/3600)+'h';
+  return 'in '+Math.floor(s/86400)+'d';
+}
 export async function loadDashUsers(){
   var el=document.getElementById('dashUsersList');if(!el)return;
   try{
@@ -517,12 +532,44 @@ export async function loadDashUsers(){
       var meta=[];
       if(u.addedBy)meta.push('by '+esc(u.addedBy));
       if(u.addedAt)meta.push(tkTimeAgo(u.addedAt));
+      if(u.lastUsedAt)meta.push('last used '+tkTimeAgo(u.lastUsedAt));
+      else if(u.hasToken)meta.push('never used');
+      if(u.expired)meta.push('token expired');
+      else if(u.expiresAt)meta.push('token expires '+tkTimeUntil(u.expiresAt));
       return '<div class="du-row"><span class="du-id">'+esc(id)+'</span><span class="du-meta">'+meta.join(' · ')+'</span>'+
         '<button class="btn btn-s" data-uid="'+esc(id)+'" data-fn="toggleUserScopes" data-args=\'['+fnData(esc(id))+']\' style="padding:4px 10px;font-size:10px;">Servers</button>'+
         '<button class="btn btn-s" data-uid="'+esc(id)+'" data-fn="removeDashUserUI" data-args=\'[\"@el\"]\' style="padding:4px 10px;font-size:10px;background:rgba(237,66,69,0.15);border-color:rgba(237,66,69,0.4);color:#ff7b81;">Remove</button></div>'+
         '<div id="scopes-'+esc(id)+'" style="display:none;"></div>';
     }).join('');
   }catch{el.innerHTML='<div class="empty"><p>Failed to load users.</p></div>'}
+}
+// Where this dashboard is currently signed in. The owner sees every session;
+// a scoped user sees only their own (the server decides, not the markup).
+export async function loadDashSessions(){
+  var el=document.getElementById('dashSessionsList');if(!el)return;
+  try{
+    var r=await fetch('/api/dash/sessions'),d=await r.json(),list=(d&&d.sessions)||[];
+    if(!list.length){el.innerHTML='<div class="tk-chip-none">No sessions found.</div>';return}
+    el.innerHTML=list.map(function(s){
+      var meta=[];
+      if(s.userId)meta.push('user '+s.userId);
+      if(s.createdAt)meta.push('signed in '+tkTimeAgo(s.createdAt));
+      if(s.expiresAt)meta.push('expires '+tkTimeUntil(s.expiresAt));
+      return '<div class="du-row"><span class="du-id">'+esc(s.method==='password'?'Shared password':'Discord token')+'</span><span class="du-meta">'+
+        (s.current?'<b style="color:var(--text);">This device</b> · ':'')+esc(meta.join(' · '))+'</span>'+
+        '<button class="btn btn-s" data-fn="revokeSession" data-args=\'['+fnData(s.id)+']\' style="padding:4px 10px;font-size:10px;background:rgba(237,66,69,0.15);border-color:rgba(237,66,69,0.4);color:#ff7b81;">'+(s.current?'Sign out':'End')+'</button></div>';
+    }).join('');
+  }catch{el.innerHTML='<div class="empty"><p>Failed to load sessions.</p></div>'}
+}
+export async function revokeSession(id){
+  if(!confirm('End this session? That device will be signed out immediately.'))return;
+  try{
+    var r=await fetch('/api/dash/sessions/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}),d=await r.json();
+    if(!d.success){showToast(d.error||'Failed to end session',true);loadDashSessions();return}
+    // Ending the session you're calling from is a sign-out, not a list refresh.
+    if(d.self){showToast('Signed out');window.location.href='/login';return}
+    showToast('Session ended');loadDashSessions();
+  }catch{showToast('Failed to end session',true)}
 }
 var scopesCache={};
 export async function toggleUserScopes(userId){
@@ -559,7 +606,7 @@ export function addDashUserUI(){
   var inp=document.getElementById('dashUserIdInput');var id=(inp.value||'').trim();
   if(!id){showToast('Enter a Discord user ID',true);return}
   fetch('/api/dash/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:id})}).then(function(r){return r.json()}).then(function(d){
-    if(d.accessToken){inp.value='';loadDashUsers();showAccessToken(id,d.accessToken)}
+    if(d.accessToken){inp.value='';loadDashUsers();showAccessToken(id,d.accessToken,d.expiresAt)}
     else showToast(d.error||'Failed to add user',true);
   }).catch(function(){showToast('Failed to add user',true)});
 }
@@ -571,12 +618,13 @@ export function removeDashUserUI(id){
     else showToast('Failed to remove',true);
   }).catch(function(){showToast('Failed to remove',true)});
 }
-function showAccessToken(userId,token){
+function showAccessToken(userId,token,expiresAt){
   var overlay=document.createElement('div');
   overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000;display:flex;align-items:center;justify-content:center;';
   overlay.onclick=function(e){if(e.target===overlay)document.body.removeChild(overlay)};
   overlay.innerHTML='<div class="tk-glass" style="max-width:440px;width:calc(100% - 40px);padding:20px;"><div class="tk-glass-h" style="margin:-20px -20px 14px;padding:14px 18px;">Access Token</div>'+
     '<p style="font-size:12px;color:var(--text-dim);margin:0 0 10px;">User <b style="color:var(--text);">'+esc(userId)+'</b> can now log in with their Discord ID and this token. <b style="color:var(--text);">Shown only once — copy it now.</b></p>'+
+    (expiresAt?'<p style="font-size:12px;color:var(--text-dim);margin:0 0 10px;">Expires '+esc(new Date(expiresAt).toLocaleDateString())+'. Add the user again to issue a fresh token.</p>':'')+
     '<code id="tkTokenSrc" style="display:block;padding:10px;font-size:11px;background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:8px;color:#7ee7a8;word-break:break-all;">'+esc(token)+'</code>'+
     '<div style="display:flex;gap:8px;margin-top:14px;"><button class="btn" style="flex:1;padding:9px;font-size:12px;" data-fn="copyToken">Copy</button>'+
     '<button class="btn btn-s" style="flex:1;padding:9px;font-size:12px;" data-fn="tkCloseModal" data-args=\'[\"@el\"]\'>Done</button></div></div>';

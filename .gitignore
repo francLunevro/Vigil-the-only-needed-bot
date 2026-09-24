@@ -50,9 +50,3 @@ repo_check/
 
 # ─── Agent Skills ───
 .claude/skills/
-
-# ─── Agent scratch ───
-.utim_tmp/
-
-# ─── Agent tooling (local-only) ───
-skills-lock.json

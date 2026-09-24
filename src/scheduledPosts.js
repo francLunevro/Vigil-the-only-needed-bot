@@ -173,7 +173,7 @@ async function processDuePosts() {
 
 function startScheduledPoster() {
     if (posterInterval) clearInterval(posterInterval);
-    posterInterval = setInterval(() => { processDuePosts().catch(() => {}); }, 30000);
+    posterInterval = setInterval(() => { processDuePosts().catch((err) => logError(err, 'scheduledPosts', 'processDuePosts')); }, 30000);
     posterInterval.unref?.();
 }
 

@@ -3,7 +3,7 @@
 // logging config, prefix, greetings, member lists & lookups, webhooks,
 // invite stats, and the server detail endpoint.
 
-const { getGuildConfig, updateGuildConfig, getWelcomeConfig, getGoodbyeConfig, updateWelcomeConfig } = require('../../config');
+const { getGuildConfig, updateGuildConfig, getWelcomeConfig, getGoodbyeConfig, updateWelcomeConfig, intToHexString } = require('../../config');
 const { getGuildStats } = require('../../stats');
 const { getWarnings } = require('../../warnings');
 const { getNotesForUser } = require('../../staffNotes');
@@ -49,7 +49,7 @@ function register(app, ctx) {
         if (embedColor !== undefined) {
             const c = String(embedColor).trim();
             if (c && !/^#[0-9a-fA-F]{6}$/.test(c)) return res.status(400).json({ error: 'Embed color must be a hex value like #5865F2' });
-            updateGuildConfig(guild.id, cfg => { cfg.embed_color = c || null; return cfg; });
+            updateGuildConfig(guild.id, cfg => { cfg.embedColor = c || null; return cfg; });
         }
         res.json({ success: true });
     });
@@ -356,6 +356,9 @@ function register(app, ctx) {
                 forums: guild.channels.cache.filter(c => c.type === 15).size,
             },
             prefix: guildConfig.prefix || ';',
+            embedColor: guildConfig.embedColor !== null && guildConfig.embedColor !== undefined
+                ? intToHexString(guildConfig.embedColor)
+                : null,
             logging: {
                 defaultChannel: guildConfig.logChannelId || null,
                 perCategory: Object.fromEntries(LOG_CATEGORIES.map(c => [c, {

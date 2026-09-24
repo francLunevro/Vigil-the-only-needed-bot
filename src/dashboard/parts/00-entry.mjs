@@ -6,6 +6,7 @@
 // handlers call — module scope is not the global scope.
 
 import './01-foundation.mjs';
+import './11-motion.mjs';
 import './02-ui-shell.mjs';
 import './03-mod-tools.mjs';
 import './04-tickets.mjs';
@@ -16,7 +17,7 @@ import './08-temp-vc.mjs';
 import './09-activity.mjs';
 import './10-polls.mjs';
 
-import { addDashUserUI, alertSrvChanged, backSrv, backupNow, cancelGw, clearBrandAsset, createGwUI, delBackup, dlBackup, endGw, errClearLog, errLoadMore, errSetFilter, errToggleStack, exportBotConfig, exportConfig, exportStats, filterCommands, filterServers, loadAudit, loadBackups, loadDashUsers, loadErrorAlert, loadErrors, loadGiveaways, loadServers, logout, populateGwServers, previewBg, previewBgBlur, previewBorder, previewColor, previewFont, previewRadius, previewTitle, previewAnimPreset, previewAnimSpeed, previewDensity, removeDashUserUI, rerollGw, saveErrorAlert, saveSettings, saveUserScopes, setLook, showSrv, showToast, togW, toggleBgType, toggleLabels, toggleLogCat, toggleMobileMenu, toggleTheme, toggleUserScopes, updateBotAvatar, updateBotName, updateBotPresence, uploadBgFile, uploadBrandAsset } from './01-foundation.mjs';
+import { addDashUserUI, alertSrvChanged, backSrv, backupNow, cancelGw, clearBrandAsset, createGwUI, delBackup, dlBackup, endGw, errClearLog, errLoadMore, errSetFilter, errToggleStack, exportBotConfig, exportConfig, exportStats, filterCommands, filterServers, loadAudit, loadBackups, loadDashSessions, loadDashUsers, loadErrorAlert, loadErrors, loadGiveaways, loadServers, logout, populateGwServers, previewBg, previewBgBlur, previewBorder, previewColor, previewFont, previewRadius, previewTitle, previewAnimPreset, previewAnimSpeed, previewDensity, removeDashUserUI, rerollGw, revokeSession, saveErrorAlert, saveSettings, saveUserScopes, setLook, showSrv, showToast, togW, toggleBgType, toggleLabels, toggleLogCat, toggleMobileMenu, toggleTheme, toggleUserScopes, updateBotAvatar, updateBotName, updateBotPresence, uploadBgFile, uploadBrandAsset } from './01-foundation.mjs';
 import { addTrackedChannel, clearTrackedChannels, exportMsgLog, msgSearchFilterChange, onMsgSearchInput, palRun, removeTrackedChannel, resetGreetingConfig, saveAllLogSettings, saveGreetingConfig, saveSrvSettings, showSec, showSrvTab, toggleGreeting, toggleNavDrop, toggleRaidMode, toggleSectionVis, updatePreview } from './02-ui-shell.mjs';
 import { addSrvNote, banSrvMember, kickSrvMember, loadInsights, loadInvites, loadMemberProfile, loadMod, loadMpServers, loadSrvNotes, searchMembers, timeoutSrvMember, toggleCompact, warnSrvMember } from './03-mod-tools.mjs';
 import { addTicketType, createTicketPanel, deleteTicketType, editQuestions, editTicketTypeSettings, loadTickets, previewTicketPanel, ticketSetLog, ticketToggle, ticketToggleLeave, tkClonePanel, tkCloseModal, tkDeletePanel, tkEditMessage, tkEditPanel, tkMarkUnsaved, tkPrevCreate, tkPrevPick, tkRecFilterSet, tkRenamePanel, tkResetChanges, tkSaveChanges, tkSetCount, tkToggleFreq, tkToggleRoleChip } from './04-tickets.mjs';
@@ -48,6 +49,7 @@ window.filterCommands = filterCommands;
 window.filterServers = filterServers;
 window.loadAudit = loadAudit;
 window.loadBackups = loadBackups;
+window.loadDashSessions = loadDashSessions;
 window.loadDashUsers = loadDashUsers;
 window.loadErrorAlert = loadErrorAlert;
 window.loadErrors = loadErrors;
@@ -69,6 +71,7 @@ window.previewRadius = previewRadius;
 window.previewTitle = previewTitle;
 window.removeDashUserUI = removeDashUserUI;
 window.rerollGw = rerollGw;
+window.revokeSession = revokeSession;
 window.saveErrorAlert = saveErrorAlert;
 window.saveSettings = saveSettings;
 window.saveUserScopes = saveUserScopes;

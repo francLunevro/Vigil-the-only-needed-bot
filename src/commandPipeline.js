@@ -36,7 +36,11 @@ const cooldownCache = new Map();
 // `interaction` only needs { commandName, user: {id}, guild: {id} } —
 // real interactions and prefix shims both qualify.
 async function checkCooldown(commandName, userId, guildId) {
-    const cooldownTime = (COOLDOWN_OVERRIDES[commandName] || DEFAULT_COOLDOWN) * 1000;
+    // `?? DEFAULT` matters: an override of 0 means "no cooldown" (shutdown),
+    // and `|| DEFAULT` silently turned that into the 3s default because 0 is
+    // falsy — so /shutdown was rate-limited after all.
+    const override = COOLDOWN_OVERRIDES[commandName];
+    const cooldownTime = (override === undefined ? DEFAULT_COOLDOWN : override) * 1000;
 
     if (cooldownTime <= 0) return true; // no cooldown
 

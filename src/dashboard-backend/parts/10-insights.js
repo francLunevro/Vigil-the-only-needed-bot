@@ -28,8 +28,9 @@ function register(app, ctx) {
             const db = getDb();
             db.prepare('INSERT INTO bot_activity (type, data, timestamp) VALUES (?, ?, ?)')
                 .run(type, JSON.stringify(data), Date.now());
-            // Keep last 10000 events
-            db.prepare('DELETE FROM bot_activity WHERE id NOT IN (SELECT id FROM bot_activity ORDER BY timestamp DESC LIMIT 10000)').run();
+            // Keep last 10000 events. id DESC keeps the tie-break deterministic
+            // for events sharing one millisecond (see message_log retention).
+            db.prepare('DELETE FROM bot_activity WHERE id NOT IN (SELECT id FROM bot_activity ORDER BY timestamp DESC, id DESC LIMIT 10000)').run();
         } catch {}
     };
 

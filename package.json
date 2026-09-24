@@ -4,11 +4,12 @@
   "license": "SEE LICENSE IN LICENSE",
   "main": "index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -17,7 +18,7 @@
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
-    "multer": "^2.2.0"
+    "multer": "^2.3.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true

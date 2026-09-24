@@ -227,7 +227,7 @@ function register(app, ctx) {
             const channel = guild.channels.cache.get(req.query.channelId) || guild.channels.cache.get(req.body?.channelId);
             if (channel) {
                 const msg = await channel.messages.fetch(req.params.messageId).catch(() => null);
-                if (msg) await msg.delete().catch(() => {});
+                if (msg) await msg.delete().catch((err) => logError(err, 'dashboard', 'rolemenu_message_delete'));
             }
             const result = removeRoleMenu(guild.id, req.params.messageId);
             if (!result) return res.status(404).json({ error: 'Menu not found' });
@@ -396,8 +396,18 @@ function register(app, ctx) {
             const embed = new EmbedBuilder()
                 .setColor(0x5865F2)
                 .setTitle('📊 ' + sanitizeForDB(question).slice(0, 256))
-                .setDescription(options.map((opt, i) => `${i + 1}. ${sanitizeForDB(opt).slice(0, 100)}`).join('\n'))
                 .setFooter({ text: 'Poll ends <t:' + Math.floor(endsAt / 1000) + ':R>' });
+
+            // Options as fields (matching /poll), so the live vote tally can
+            // render counts — handlePollVote rewrites fields, and a
+            // description-only option list never showed any numbers.
+            for (const opt of options) {
+                embed.addFields({
+                    name: sanitizeForDB(opt).slice(0, 256),
+                    value: '📊 Votes: **0** (0%)',
+                    inline: options.length <= 2,
+                });
+            }
 
             const buttons = options.map((opt, i) => new ButtonBuilder()
                 .setCustomId((multi ? 'pm' : anonymous ? 'pa' : 'pv') + '_vote_' + i + '_' + pollId)
@@ -415,6 +425,16 @@ function register(app, ctx) {
             const msg = await channel.send({ embeds: [embed], components: rows });
 
             db.prepare('UPDATE poll_votes SET message_id = ? WHERE message_id = ?').run(msg.id, pollId);
+            // Record where the poll lives so POST /api/polls/end can finalize it.
+            require('../../interactions').recordPoll({
+                messageId: msg.id,
+                guildId,
+                channelId,
+                question,
+                options,
+                pollType: multi ? 'multi' : anonymous ? 'anonymous' : 'single',
+                endsAt,
+            });
 
             res.json({ success: true, messageId: msg.id, pollId });
         } catch (err) {
@@ -430,7 +450,7 @@ function register(app, ctx) {
         const { messageId } = req.body || {};
         if (!messageId) return res.status(400).json({ error: 'Missing messageId' });
         try {
-            await require('../../interactions').endPoll(messageId);
+            await require('../../interactions').endPoll(messageId, { client, channelId: req.body?.channelId });
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });

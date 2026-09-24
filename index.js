@@ -120,11 +120,11 @@ for (const event of allEvents) {
 // ── Live server-stats refresh (join / leave / boost changes) ──
 // Fires on top of the registered events so stat channels update instantly
 // instead of waiting for the 10-minute sweep.
-client.on(Events.GuildMemberAdd, (member) => { refreshGuildStats(member.guild).catch(() => {}); });
-client.on(Events.GuildMemberRemove, (member) => { refreshGuildStats(member.guild).catch(() => {}); });
+client.on(Events.GuildMemberAdd, (member) => { refreshGuildStats(member.guild).catch((err) => logError(err, 'event', 'refreshGuildStats')); });
+client.on(Events.GuildMemberRemove, (member) => { refreshGuildStats(member.guild).catch((err) => logError(err, 'event', 'refreshGuildStats')); });
 client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
     if ((oldMember.premiumSince || null) !== (newMember.premiumSince || null)) {
-        refreshGuildStats(newMember.guild).catch(() => {});
+        refreshGuildStats(newMember.guild).catch((err) => logError(err, 'event', 'refreshGuildStats'));
     }
 });
 
@@ -295,7 +295,7 @@ setErrorListener((entry) => {
                 fields: entry.stack ? [{ name: 'Stack (first lines)', value: '```\n' + String(entry.stack).slice(0, 900) + '\n```' }] : [],
                 timestamp: entry.timestamp || new Date().toISOString(),
             }],
-        }).catch(() => {});
+        }).catch((err) => logError(err, 'event', 'error_alert_send'));
     } catch { /* alerting must never crash the bot */ }
 });
 

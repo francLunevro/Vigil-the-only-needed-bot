@@ -26,10 +26,15 @@ async function executeDashAccess(interaction) {
         if (!user) return interaction.reply({ content: 'Please specify a user.', ephemeral: true });
         const result = addDashUser(user.id, interaction.user.tag);
         const token = result.accessToken;
+        // Tell them the shelf life up front — otherwise the token just stops
+        // working one day and looks like a bug.
+        const expiresNote = result.expiresAt
+            ? '\n\n\u23F3 This token expires <t:' + Math.floor(result.expiresAt / 1000) + ':R>. Ask the owner for a new one after that.'
+            : '\n\n\u267E\uFE0F This token does not expire.';
         // DM the user their access token
         let dmSent = false;
         try {
-            await user.send('**\u2705 Dashboard Access Granted**\n\nYou can now log into the bot dashboard using your Discord ID and this access token:\n\n**Access Token:** `' + token + '`\n\nGo to the dashboard URL \u2192 **Discord ID** tab \u2192 enter your ID and this token.\n\n\u26A0\uFE0F **Keep this token private.** Do not share it with anyone.');
+            await user.send('**\u2705 Dashboard Access Granted**\n\nYou can now log into the bot dashboard using your Discord ID and this access token:\n\n**Access Token:** `' + token + '`\n\nGo to the dashboard URL \u2192 **Discord ID** tab \u2192 enter your ID and this token.\n\n\u26A0\uFE0F **Keep this token private.** Do not share it with anyone.' + expiresNote);
             dmSent = true;
         } catch (err) {
             logError(err, 'commands', 'dashaccess DM to ' + user.id);
@@ -39,7 +44,7 @@ async function executeDashAccess(interaction) {
             title: '\u2705 Dashboard Access Granted',
             description: '<@' + user.id + '> can now log into the dashboard.\n' + (dmSent ? '\u2709\uFE0F Token sent via DM.' : '\u26A0\uFE0F Could not DM the user. Token shown below.'),
             fields: dmSent ? [] : [
-                { name: 'Access Token', value: '`' + token + '`\nShare this with them privately.', inline: false },
+                { name: 'Access Token', value: '`' + token + '`\nShare this with them privately.' + expiresNote, inline: false },
             ],
         });
         await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -70,7 +75,9 @@ async function executeDashAccess(interaction) {
             color: 0x5865F2,
             title: '\uD83D\uDC40 Dashboard Users (' + entries.length + ')',
             description: entries.map(([id, u]) =>
-                '<@' + id + '> \u2014 Added <t:' + Math.floor(u.addedAt / 1000) + ':R> by ' + u.addedBy
+                '<@' + id + '> \u2014 Added <t:' + Math.floor(u.addedAt / 1000) + ':R> by ' + u.addedBy +
+                (u.expiresAt ? ' \u00b7 expires <t:' + Math.floor(u.expiresAt / 1000) + ':R>' : ' \u00b7 never expires') +
+                (u.lastUsedAt ? ' \u00b7 last used <t:' + Math.floor(u.lastUsedAt / 1000) + ':R>' : ' \u00b7 never used')
             ).join('\n'),
         });
         await interaction.reply({ embeds: [embed], ephemeral: true });
