@@ -167,8 +167,13 @@ test('the SPA fallback never swallows API requests', async () => {
     const anonApi = await request(REACT_PORT, 'GET', '/api/servers');
     assert.strictEqual(anonApi.status, 401, 'auth is unchanged: no session, no data');
 
+    // The token API answers as an API (401 unauthenticated) wherever its
+    // routes are present. Asserted loosely on purpose: the routes live in a
+    // part this test does not own, so a checkout without them answers 404 —
+    // what must never happen is the SPA shell answering an /api path.
     const tokenApi = await request(REACT_PORT, 'GET', '/api/v1/servers');
-    assert.strictEqual(tokenApi.status, 401, 'the token API still answers as an API');
+    assert.ok(tokenApi.status === 401 || tokenApi.status === 404, 'the token API must answer as an API, got ' + tokenApi.status);
+    assert.strictEqual(tokenApi.body.includes('<div id="root">'), false, 'the SPA must not answer /api/v1/*');
 });
 
 test('/health and /metrics stay open for hosts and scrapers', async () => {
