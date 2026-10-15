@@ -1,3 +1,13 @@
+# ── Build stage: compile the React dashboard to static assets ──
+# The UI is prebuilt so the runtime stage needs no bundler, no vite, and no
+# react — production stays a single Node process, exactly as before.
+FROM node:24-slim AS webbuild
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build:web
+
 FROM node:24-slim
 
 WORKDIR /app
@@ -9,6 +19,9 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY . .
+
+# Drop in the UI built above (excluded from the prod install by --omit=dev).
+COPY --from=webbuild /app/web/dist ./web/dist
 
 RUN chown -R node:node /app
 USER node
