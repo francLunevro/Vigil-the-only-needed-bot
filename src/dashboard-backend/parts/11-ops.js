@@ -428,19 +428,90 @@ function register(app, ctx) {
     });
 
     // ── Serve Frontend ──
-    // The dashboard frontend is served as true ES modules from
-    // src/dashboard/parts/ (index.html loads 00-entry.mjs); express.static
-    // below serves them with a JavaScript MIME type.
+    // Two complete UIs ship in this repo and share one Express process, one
+    // session and one JSON API:
+    //
+    //   src/dashboard/   the original vanilla ES modules (index.html loads
+    //                    /static/parts/00-entry.mjs) — kept, not deleted
+    //   web/dist         the React app, built once by `npm run build:web`
+    //
+    // The React build owns `/` and `/login`. Three ways back to the original:
+    //   • DASHBOARD_UI=legacy — serves the vanilla frontend, no code change
+    //   • no web/dist at all (plain clone, bot-only deploy) — falls back
+    //     automatically, because a missing build must never break the bot
+    //   • a build made for the old /app base — treated as stale, same fallback
+    //     (its asset URLs no longer resolve, so serving it would be a blank
+    //     page for anyone upgrading without re-running the build)
+    // The snapshot in backups/native-dashboard-pre-react/ documents all three.
     const frontendDir = path.join(__dirname, '..', '..', 'dashboard');
+    const reactDir = path.join(__dirname, '..', '..', '..', 'web', 'dist');
+    const reactEntry = path.join(reactDir, 'index.html');
+    const reactBuilt = fs.existsSync(reactEntry);
+    const uiMode = String(process.env.DASHBOARD_UI || '').trim().toLowerCase();
+    const legacyUi = uiMode === 'legacy' || uiMode === 'classic' || uiMode === 'vanilla';
+    let staleBuild = false;
+    if (reactBuilt) {
+        try {
+            // Built under the old `base: '/app/'`, so every asset points at a
+            // path this version no longer serves.
+            staleBuild = /["'(]\/app\/assets\//.test(fs.readFileSync(reactEntry, 'utf8'));
+        } catch { /* unreadable build: leave it to the static handler */ }
+    }
+    const reactAtRoot = reactBuilt && !staleBuild && !legacyUi;
+
+    if (!reactBuilt) {
+        console.warn('[Dashboard] No React build at web/dist/index.html — serving the original dashboard. Run `npm run build:web` to serve the React UI.');
+    } else if (staleBuild && !legacyUi) {
+        console.warn('[Dashboard] web/dist was built for the old /app path and its assets no longer resolve — serving the original dashboard. Re-run `npm run build:web` to serve the React UI.');
+    } else if (legacyUi) {
+        console.warn('[Dashboard] DASHBOARD_UI=' + uiMode + ' — serving the original dashboard at /. Unset it to serve the React UI.');
+    } else {
+        if (uiMode && uiMode !== 'next' && uiMode !== 'react') {
+            console.warn('[Dashboard] Unrecognised DASHBOARD_UI=' + uiMode + ' — using the React UI. Use DASHBOARD_UI=legacy for the original dashboard.');
+        }
+        console.log('[Dashboard] Serving the React dashboard at / (login comes from the same bundle).');
+    }
+
     app.get('/', (req, res) => {
         if (!req.authenticated) return res.redirect('/login');
-        res.sendFile(path.join(frontendDir, 'index.html'));
+        res.sendFile(reactAtRoot ? reactEntry : path.join(frontendDir, 'index.html'));
     });
     app.get('/login', (req, res) => {
         if (req.authenticated) return res.redirect('/');
-        res.sendFile(path.join(frontendDir, 'login.html'));
+        // React routes this one itself (web/src/Login.jsx, picked by the path
+        // in main.jsx); the vanilla login.html is the fallback.
+        res.sendFile(reactAtRoot ? reactEntry : path.join(frontendDir, 'login.html'));
     });
     app.use('/static', require('express').static(frontendDir));
+
+    if (reactAtRoot) {
+        // Content-hashed JS/CSS of the React build, served from the site root
+        // (vite base '/'). Public on purpose: the login screen is served
+        // logged-out and still has to load them. `index: false` keeps
+        // directory requests out of static so the guards below own the HTML.
+        app.use(require('express').static(reactDir, { index: false }));
+
+        // Bookmarks and docs pointing at the old /app mount. Redirecting with
+        // no fragment in the Location header preserves the hash route, so
+        // /app/#/servers still opens the Servers screen.
+        app.use('/app', (req, res) => res.redirect('/'));
+
+        // Client-side routing: an authenticated GET for a path that isn't a
+        // real file boots the SPA instead of 404ing, so a refresh or a deep
+        // link keeps working. Nothing that owns a real route can be swallowed
+        // — /api/*, /health and /metrics are matched earlier and /api/*,
+        // /uploads/* are excluded here, so a missing API route still answers
+        // as an API (404), never as HTML.
+        app.use((req, res, next) => {
+            if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+            if (req.path === '/api' || req.path.startsWith('/api/')) return next();
+            if (req.path === '/uploads' || req.path.startsWith('/uploads/')) return next();
+            if (path.extname(req.path)) return next(); // real assets, files, favicon
+            if (!req.accepts('html')) return next(); // JSON/XHR callers
+            if (!req.authenticated) return res.redirect('/login');
+            res.sendFile(reactEntry);
+        });
+    }
 
     // ── Centralized Error Middleware ──
     // Catches any error thrown by the routes above so the API always returns a

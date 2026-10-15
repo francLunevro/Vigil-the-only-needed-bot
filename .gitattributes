@@ -1,0 +1,6 @@
+# The native-dashboard snapshot in backups/ is verified with SHA-256 hashes
+# (see backups/native-dashboard-pre-react/MANIFEST.sha256). Line-ending
+# conversion would rewrite those bytes on checkout, so the hashes would only
+# verify on the machine that created them. Store and check those files out
+# verbatim instead, on every platform.
+backups/** -text

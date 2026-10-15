@@ -7,7 +7,7 @@
 Moderation with case files · 18 kinds of logging · tickets with transcripts · temp roles · a small API for your own tools · and a dashboard that runs in a browser tab.
 
 [![CI](https://github.com/francLunevro/Vigil-the-only-needed-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/francLunevro/Vigil-the-only-needed-bot/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-537%20passing-3fb950)](#the-tests)
+[![Tests](https://img.shields.io/badge/tests-550%20passing-3fb950)](#the-tests)
 [![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![discord.js](https://img.shields.io/badge/discord.js-v14-5865F2?logo=discord.js&logoColor=white)](https://discord.js.org)
 [![License](https://img.shields.io/badge/license-Community%20Source-5865F2)](LICENSE)
@@ -305,16 +305,24 @@ Clicking a server opens its own view: Overview, Roles, Channels, Mod tools, Sett
 
 ### Both frontends are real, and one of them won
 
-The dashboard started as vanilla ES modules and is now a React app under `web/`, built once with Vite into `web/dist`, and served as static files by the bot's own Express process. Same process, same session, same API. All 34 screens have been ported, so the "not migrated yet" placeholder is unreachable from the nav.
+The dashboard started as vanilla ES modules. It's a React app now, built once with Vite into `web/dist` and served as static files by the bot's own Express process — same process, same session, same API. All 34 screens were ported, so the "not migrated yet" placeholder is unreachable from the nav. **The React app is what `/` serves, and its login screen is what `/login` serves.**
+
+The original frontend was not deleted to make that happen. `src/dashboard/` is still in the repo and still ships; one environment variable puts it back:
+
+```bash
+DASHBOARD_UI=legacy npm start   # the original dashboard, at /
+```
+
+Unset it and the React app is back. If `web/dist` is missing — a plain `git clone`, a bot-only deploy, or a build left over from the old `/app` layout — the bot serves the original dashboard by itself rather than a blank page, and says so in the boot log. A snapshot of the pre-switch frontend, with SHA-256 hashes and restore instructions, lives in [`backups/native-dashboard-pre-react/`](backups/native-dashboard-pre-react/README.md).
 
 ```bash
 npm run build:web     # build the React app into web/dist
 npm start             # bot + dashboard
 ```
 
-- With `web/dist` built, the React app is at **`/app`**, and the React login page is what `/login` serves. The old frontend still serves `/`.
-- Set **`DASHBOARD_UI=next`** and the React app moves to `/` instead. That's the only switch — I left it off by default so an upgrade can't change what your bookmarks do.
-- No `web/dist` (a plain `git clone`, or a bot-only deploy)? The old frontend serves everything, exactly as before.
+- Old links to `/app/…` redirect to `/`, so existing bookmarks and docs keep working.
+- **`DASHBOARD_UI=legacy`** serves the original frontend at `/` instead — dashboard and login page together. Unset it to switch back.
+- No `web/dist` at all (a plain `git clone`, or a bot-only deploy)? The original frontend serves everything, exactly as before — the bot never depends on the build.
 
 If you're working on the UI, `npm run dev:web` starts Vite on 5173 with hot reloading and proxies `/api` to the running bot.
 
@@ -355,7 +363,7 @@ git clone https://github.com/francLunevro/Vigil-the-only-needed-bot.git
 cd Vigil-the-only-needed-bot
 npm install
 cp .env.example .env      # fill in BOT_TOKEN, OWNER_ID, DASHBOARD_PASSWORD
-npm run build:web         # optional, builds the React dashboard for /app
+npm run build:web         # optional, builds the dashboard the bot serves at /
 npm start
 ```
 
@@ -392,7 +400,7 @@ Everything lives in environment variables. Copy `.env.example` and fill in the t
 | Variable | Default | What it does |
 |---|---|---|
 | `PORT` | `3000` | Dashboard port |
-| `DASHBOARD_UI` | — | `next` serves the React dashboard at `/` instead of `/app` |
+| `DASHBOARD_UI` | — | `legacy` (also `classic`, `vanilla`) serves the original dashboard at `/` instead of the React one. Unset it for React, which is the default |
 | `DASHBOARD_TOKEN_DAYS` | `90` | How long `/dashaccess` tokens last. `0` never expires them. Changing it only affects tokens issued afterwards; re-running `/dashaccess add` mints a fresh one |
 | `DASHBOARD_SESSION_HOURS` | `24` | Idle session timeout |
 | `DASHBOARD_SESSION_MAX_DAYS` | `7` | Hard cap on a session's life, no matter how active it is |
@@ -439,7 +447,7 @@ One process, one file, no services:
 ```
 Discord ←─ discord.js v14 ─→  bot logic  ─→  SQLite (better-sqlite3)
                                ↕ shared
-                         Express dashboard  ─→  React app (/app) + old UI (/)
+                         Express dashboard  ─→  React app at /  (original UI kept in src/dashboard)
 ```
 
 Idles around 80–120 MB with a few hundred members. People ask why there's no Redis, no queue, no Kubernetes. Because I'm the one who gets woken up when it breaks, and every moving part is another thing that can break at 3am.
@@ -540,7 +548,7 @@ The React app the bot serves alongside it:
 ```
 web/
 ├── index.html
-├── vite.config.mjs     root=web/, base=/app/, output web/dist, no inlining (CSP)
+├── vite.config.mjs     root=web/, base=/, output web/dist, no inlining (CSP)
 └── src/
     ├── main.jsx        Entry and the login/app split, plus global SSE toasts
     ├── App.jsx         Hash router, the screen map, theme
@@ -654,7 +662,7 @@ Where mine runs. New project, deploy from the GitHub repo, then set `BOT_TOKEN`,
 
 ### Docker
 
-It builds in two stages: the first installs everything and runs `npm run build:web`, the second installs with `npm ci --omit=dev`, runs as the non-root `node` user, and declares a healthcheck against `/health`. The React dashboard comes baked in, so this image serves it at `/app` immediately.
+It builds in two stages: the first installs everything and runs `npm run build:web`, the second installs with `npm ci --omit=dev`, runs as the non-root `node` user, and declares a healthcheck against `/health`. The React dashboard comes baked in, so this image serves it at `/` immediately.
 
 ```bash
 docker build -t vigil .
@@ -696,9 +704,9 @@ On a VPS you already own, it's $0 — it fits next to whatever else is running t
 
 **The bot doesn't see messages, joins, or voice.** Privileged intents are off in the portal, or the bot wasn't re-invited after you turned them on. Boot logs warn about this.
 
-**`/app` is a 404, or blank.** The React dashboard comes from `web/dist`, which a plain clone doesn't have. Run `npm run build:web` — the Docker image already does. Without it the old dashboard serves `/` and everything still works.
+**The dashboard is blank, and the console shows 404s on `/assets/…`.** `web/dist` is what `/` is served from, and it's either missing or stale. Run `npm run build:web` — the Docker image does it for you. A build left over from the old `/app` layout is detected on boot: the bot logs a warning and serves the original dashboard instead of a blank page.
 
-**I want the new dashboard on `/`.** Set `DASHBOARD_UI=next`. Unset it to go back.
+**I want the original dashboard back.** Set `DASHBOARD_UI=legacy`. Unset it to return to React. Nothing else changes — same process, same session, same API, and the files were never removed.
 
 **My API token works on `/api/v1/me` but 403s everywhere else.** That's scopes. `/me` only needs a valid token; the rest need `read:servers`, `read:stats` or `read:logs`. `write:webhooks` is reserved and not served yet, and the error says so rather than pretending otherwise.
 
@@ -712,7 +720,7 @@ On a VPS you already own, it's $0 — it fits next to whatever else is running t
 
 **Does it survive restarts?** The data does — it's SQLite, and temp bans, temp roles, giveaways, reminders, polls and scheduled posts are all database-backed with sweepers that catch up on boot. So do logins now: sessions moved into the database, so a restart doesn't sign you out.
 
-**How do I update?** `git pull`, `npm install`, `npm run build:web` if you serve the React UI, restart, and `/deploy` if commands changed. Take a backup first; it's ten seconds. Migrations apply themselves on boot.
+**How do I update?** `git pull`, `npm install`, `npm run build:web` (that build is what `/` serves now), restart, and `/deploy` if commands changed. Take a backup first; it's ten seconds. Migrations apply themselves on boot.
 
 ---
 
@@ -725,7 +733,7 @@ Every project has a list like this. Most just don't show you theirs.
 - **`/help` is behind.** It covers 17 areas and doesn't include Tickets, Server Stats, Voice Presence, Temp Voice, Scheduled Posts, Raid Mode, Warning Thresholds or Reports. Worse, `/help category:…` validates against that same stale list, so those areas aren't reachable from it at all. The dashboard's Commands screen is complete.
 - **`/status` still says "35+ total" commands.** There are 76. Cosmetic, wrong, on my list.
 - **`discloud.config` still calls this `LogBot`.** It didn't get renamed when everything else did.
-- **The React dashboard isn't in the coverage run.** `test:coverage` measures `src/` and the old frontend. The 53% says nothing about the new UI, and `web/dist` needs that explicit build step before `/app` exists.
+- **The React dashboard isn't in the coverage run.** `test:coverage` measures `src/` and the original frontend. The 53% says nothing about the new UI, which `test/dashboard-ui-default.test.js` covers at the HTTP level instead of by line count.
 - **The old frontend has spots where it's clearly older.** `var`, one-letter variables, HTML assembled from strings. It works and it's easy to follow, but it's not pretty, and I'd rather you hear it from me than find it yourself.
 - **You're the on-call.** Backups, uptime, security — yours now. CI is a seatbelt, not a guarantee, and nothing in it clicks a browser for you.
 

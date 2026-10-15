@@ -48,5 +48,8 @@ npm-debug.log*
 nul
 repo_check/
 
+# ─── React dashboard build output (produced by `npm run build:web`) ───
+web/dist/
+
 # ─── Agent Skills ───
 .claude/skills/

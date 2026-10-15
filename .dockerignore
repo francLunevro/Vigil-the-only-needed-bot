@@ -16,3 +16,4 @@ stats.json
 dashboardConfig.json
 permissions.json
 reactionRoles.json
+web/dist
