@@ -16,10 +16,11 @@ import './07-voice.mjs';
 import './08-temp-vc.mjs';
 import './09-activity.mjs';
 import './10-polls.mjs';
+import './12-custom-commands.mjs';
 
 import { addDashUserUI, alertSrvChanged, backSrv, backupNow, cancelGw, clearBrandAsset, createGwUI, delBackup, dlBackup, endGw, errClearLog, errLoadMore, errSetFilter, errToggleStack, exportBotConfig, exportConfig, exportStats, filterCommands, filterServers, loadAudit, loadBackups, loadDashSessions, loadDashUsers, loadErrorAlert, loadErrors, loadGiveaways, loadServers, logout, populateGwServers, previewBg, previewBgBlur, previewBorder, previewColor, previewFont, previewRadius, previewTitle, previewAnimPreset, previewAnimSpeed, previewDensity, removeDashUserUI, rerollGw, revokeSession, saveErrorAlert, saveSettings, saveUserScopes, setLook, showSrv, showToast, togW, toggleBgType, toggleLabels, toggleLogCat, toggleMobileMenu, toggleTheme, toggleUserScopes, updateBotAvatar, updateBotName, updateBotPresence, uploadBgFile, uploadBrandAsset } from './01-foundation.mjs';
 import { addTrackedChannel, clearTrackedChannels, exportMsgLog, msgSearchFilterChange, onMsgSearchInput, palRun, removeTrackedChannel, resetGreetingConfig, saveAllLogSettings, saveGreetingConfig, saveSrvSettings, showSec, showSrvTab, toggleGreeting, toggleNavDrop, toggleRaidMode, toggleSectionVis, updatePreview } from './02-ui-shell.mjs';
-import { addSrvNote, banSrvMember, kickSrvMember, loadInsights, loadInvites, loadMemberProfile, loadMod, loadMpServers, loadSrvNotes, searchMembers, timeoutSrvMember, toggleCompact, warnSrvMember } from './03-mod-tools.mjs';
+import { addSrvNote, banSrvMember, grantTempRoleUI, kickSrvMember, loadInsights, loadInvites, loadMemberProfile, loadMod, loadMpServers, loadSrvNotes, loadTempRoles, revokeTempRoleUI, searchMembers, timeoutSrvMember, toggleCompact, warnSrvMember } from './03-mod-tools.mjs';
 import { addTicketType, createTicketPanel, deleteTicketType, editQuestions, editTicketTypeSettings, loadTickets, previewTicketPanel, ticketSetLog, ticketToggle, ticketToggleLeave, tkClonePanel, tkCloseModal, tkDeletePanel, tkEditMessage, tkEditPanel, tkMarkUnsaved, tkPrevCreate, tkPrevPick, tkRecFilterSet, tkRenamePanel, tkResetChanges, tkSaveChanges, tkSetCount, tkToggleFreq, tkToggleRoleChip } from './04-tickets.mjs';
 import { addAMFilter, bulkAMFilter, deleteAMFilter, exportAMConfig, importAMConfig, loadAutomod, saveAMChannels, saveAMRoles, saveAMRule, toggleAMChanMode, toggleAMChannel, toggleAMRole, toggleAMRule, uploadTxtFilter } from './05-auto-mod.mjs';
 import { addRoleMenuOptionUI, createReactionRoleUI, createRoleMenuUI, deleteReactionRole, deleteRoleMenu, editRoleMenuUI, loadReactionRoles, loadRoleMenus, publishRoleMenuUI, removeRoleMenuOptionUI, saveRoleMenuTitle } from './06-reaction-roles.mjs';
@@ -27,6 +28,7 @@ import { createApiToken, deleteApiToken, deleteWebhook, joinVoicePresence, joinV
 import { addTempVoiceTrigger, addWarningThresholdUI, deleteTempVoiceChannel, loadPrefixCommands, loadTempVoice, loadWarningThresholds, removeTempVoiceTrigger, removeWarningThresholdUI, savePrefixUI, saveRateLimits, saveTempVoiceConfig } from './08-temp-vc.mjs';
 import { copyToClipboard, createReminderUI, deleteReminderUI, deleteReportUI, loadBanAppeals, loadBotActivity, loadCmdHeatmap, loadReports, loadServerCompare, submitBanAppealUI, updateBanAppealStatusUI, updateReportStatusUI } from './09-activity.mjs';
 import { createAnnouncementUI, createPollUI, loadGreetingsEditor, loadPollsAnnouncements } from './10-polls.mjs';
+import { createAutoresponderUI, deleteAutoresponderUI, deleteCustomCommandUI, editCustomCommandUI, loadCustomCommands, saveCustomCommandUI, toggleAutoresponderUI } from './12-custom-commands.mjs';
 
 window.addDashUserUI = addDashUserUI;
 window.alertSrvChanged = alertSrvChanged;
@@ -115,6 +117,9 @@ window.loadMemberProfile = loadMemberProfile;
 window.loadMod = loadMod;
 window.loadMpServers = loadMpServers;
 window.loadSrvNotes = loadSrvNotes;
+window.loadTempRoles = loadTempRoles;
+window.grantTempRoleUI = grantTempRoleUI;
+window.revokeTempRoleUI = revokeTempRoleUI;
 window.searchMembers = searchMembers;
 window.timeoutSrvMember = timeoutSrvMember;
 window.toggleCompact = toggleCompact;
@@ -207,6 +212,13 @@ window.createAnnouncementUI = createAnnouncementUI;
 window.createPollUI = createPollUI;
 window.loadGreetingsEditor = loadGreetingsEditor;
 window.loadPollsAnnouncements = loadPollsAnnouncements;
+window.loadCustomCommands = loadCustomCommands;
+window.saveCustomCommandUI = saveCustomCommandUI;
+window.editCustomCommandUI = editCustomCommandUI;
+window.deleteCustomCommandUI = deleteCustomCommandUI;
+window.createAutoresponderUI = createAutoresponderUI;
+window.toggleAutoresponderUI = toggleAutoresponderUI;
+window.deleteAutoresponderUI = deleteAutoresponderUI;
 
 import { copyToken, toggleCollapsed } from './01-foundation.mjs';
 window.copyToken = copyToken;

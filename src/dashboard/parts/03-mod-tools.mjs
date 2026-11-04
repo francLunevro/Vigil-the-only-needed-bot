@@ -17,7 +17,18 @@ export async function loadSrvModTools(id){
   +'<button class="btn btn-s" data-fn="banSrvMember" data-args=\'['+fnData(id)+']\' style="background:rgba(237,66,69,0.12);color:#ed4245;border-color:rgba(237,66,69,0.2);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Ban</button>'
   +'<button class="btn btn-s" data-fn="timeoutSrvMember" data-args=\'['+fnData(id)+']\' style="background:rgba(88,101,242,0.12);color:#5865F2;border-color:rgba(88,101,242,0.2);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Timeout</button>'
   +'</div></div></div>'
+  +'<div class="tw"><div class="tw-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Temporary Roles</div><div style="padding:14px;">'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">'
+  +'<input type="text" id="trUserSearch" placeholder="User ID..." style="flex:1;min-width:160px;padding:9px 14px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;outline:none;font-family:inherit;">'
+  +'<select id="trRoleSelect" style="flex:1;min-width:160px;"><option value="">Select role...</option></select>'
+  +'<input type="text" id="trDuration" placeholder="24h" style="flex:0 0 110px;padding:9px 14px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;outline:none;font-family:inherit;">'
+  +'<button class="btn btn-s" data-fn="grantTempRoleUI" data-args=\'['+fnData(id)+']\' style="padding:9px 14px;font-size:11px;">Grant</button>'
+  +'</div>'
+  +'<div class="stg-hint" style="margin-bottom:10px;">The bot removes the role automatically when the time is up — durations like <code>30m</code>, <code>24h</code>, <code>7d</code>.</div>'
+  +'<div id="tempRolesList"><div class="loading"><div class="spin"></div></div></div>'
+  +'</div></div>'
   +'<div id="modActionResult"></div>';
+  loadTempRoles(id);
   try{
     const r=await fetch('/api/server/'+id+'/invites');
     if(r.ok){
@@ -342,6 +353,76 @@ export async function loadInvites(){
   }catch(e){
     list.innerHTML='<div class="empty"><p>Failed to load invites</p><p class="empty-act">'+e.message+'</p></div>';
   }
+}
+
+// ── Temporary Roles ──
+// Durations are parsed here to milliseconds; the server owns the limits.
+function parseDurationInput(str){
+  const m=String(str||'').trim().toLowerCase().match(/^(?:\d+\s*[wdhms]\s*)+$/);
+  if(!m)return null;
+  const units={w:604800000,d:86400000,h:3600000,m:60000,s:1000};
+  let total=0,matched=false;
+  for(const part of String(str).trim().toLowerCase().matchAll(/(\d+)\s*([wdhms])/g)){total+=parseInt(part[1],10)*units[part[2]];matched=true;}
+  return matched&&total>0?total:null;
+}
+function untilLabel(expiresAt){
+  const ms=expiresAt-Date.now();
+  if(ms<=0)return 'expiring now';
+  const mins=Math.floor(ms/60000),hours=Math.floor(mins/60),days=Math.floor(hours/24);
+  if(days>0)return 'in '+days+'d '+Math.floor(hours%24)+'h';
+  if(hours>0)return 'in '+hours+'h '+Math.floor(mins%60)+'m';
+  return 'in '+Math.max(1,mins)+'m';
+}
+export async function loadTempRoles(serverId){
+  const el=document.getElementById('tempRolesList');
+  if(!el)return;
+  try{
+    const r=await fetch('/api/server/'+serverId+'/temp-roles');
+    const d=await r.json();
+    if(!r.ok){el.innerHTML='<div class="empty"><p>'+esc(d.error||'Could not load temporary roles')+'</p></div>';return;}
+    const roles=d.roles||[];
+    const sel=document.getElementById('trRoleSelect');
+    if(sel&&sel.options.length<=1&&roles.length){
+      sel.innerHTML='<option value="">Select role...</option>'+roles.map(function(role){return '<option value="'+role.id+'">'+esc(role.name)+'</option>';}).join('');
+    }
+    const entries=d.entries||[];
+    if(!entries.length){el.innerHTML='<div class="empty"><p>No temporary roles pending.</p></div>';return;}
+    el.innerHTML=entries.map(function(e){
+      const role=roles.find(function(rr){return rr.id===e.roleId;});
+      return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;flex-wrap:wrap;">'
+        +'<div style="flex:1;min-width:180px;">'
+        +'<div style="font-size:12px;color:var(--text);"><strong>'+esc(role?role.name:e.roleId)+'</strong> → <code>'+esc(e.userId)+'</code></div>'
+        +'<div style="font-size:10px;color:var(--text-muted);margin-top:3px;">'+untilLabel(e.expiresAt)+' · '+new Date(e.expiresAt).toLocaleString()+(e.attempts?' · ⚠️ '+e.attempts+' failed removal attempt(s)':'')+'</div>'
+        +'</div>'
+        +'<button class="btn btn-s" data-fn="revokeTempRoleUI" data-args=\'['+fnData(serverId)+','+fnData(e.userId)+','+fnData(e.roleId)+']\' style="padding:7px 12px;font-size:11px;background:var(--danger);flex-shrink:0;">Remove</button>'
+        +'</div>';
+    }).join('');
+  }catch(e){
+    el.innerHTML='<div class="empty"><p>Could not load temporary roles.</p></div>';
+  }
+}
+export async function grantTempRoleUI(serverId){
+  const uid=document.getElementById('trUserSearch')?.value.trim();
+  const roleId=document.getElementById('trRoleSelect')?.value;
+  const durationMs=parseDurationInput(document.getElementById('trDuration')?.value);
+  if(!uid)return showToast('Enter a user ID',true);
+  if(!roleId)return showToast('Pick a role',true);
+  if(!durationMs)return showToast('Duration must look like 30m, 24h or 7d',true);
+  try{
+    const r=await fetch('/api/server/'+serverId+'/temp-roles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:uid,roleId:roleId,durationMs:durationMs})});
+    const d=await r.json();
+    if(d.success){showToast(d.extended?'Temporary role extended':'Temporary role granted');document.getElementById('trUserSearch').value='';loadTempRoles(serverId);}
+    else showToast(d.error||'Failed to grant role',true);
+  }catch(e){showToast('Failed to grant role',true);}
+}
+export async function revokeTempRoleUI(serverId,userId,roleId){
+  if(!confirm('Remove this role from the member now?'))return;
+  try{
+    const r=await fetch('/api/server/'+serverId+'/temp-roles',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:userId,roleId:roleId})});
+    const d=await r.json();
+    if(d.success){showToast('Role removed');loadTempRoles(serverId);}
+    else showToast(d.error||'Failed to remove role',true);
+  }catch(e){showToast('Failed to remove role',true);}
 }
 
 // ── Compact Mode Toggle (settings) ──

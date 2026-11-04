@@ -1,14 +1,20 @@
 import { api } from '../api.js';
-import { useAsync, num, timeAgo } from '../lib.js';
+import { useAsync, timeAgo } from '../lib.js';
 import { useLiveReload } from '../live.jsx';
 import { Card, PageHeader, Skeleton, Empty, Icon } from '../components/ui.jsx';
 
-// The standalone Activity feed: per-guild join totals from /api/activity.
+// The standalone Activity feed: one row per recorded member event from
+// /api/activity (member_join / member_leave, newest first).
 // The event-by-event history lives on the Bot Activity screen
 // (/api/activity/timeline), which is a separate, richer view.
+const LABELS = {
+    member_join: { text: 'Member joined', tone: 'dist-ico-good' },
+    member_leave: { text: 'Member left', tone: 'dist-ico-bad' },
+};
+
 export default function Activity() {
     const { data, loading, error, reload } = useAsync(() => api.get('/api/activity'), []);
-    // Join/leave style events arrive over SSE; refresh the feed when they do.
+    // Join/leave events arrive over SSE; refresh the feed when they do.
     useLiveReload(reload);
 
     if (loading && !data) return <Skeleton rows={5} />;
@@ -22,20 +28,25 @@ export default function Activity() {
             {error && <Empty title="Couldn’t load activity" hint="The bot may be starting up." />}
 
             {!error && events.length === 0 && (
-                <Empty title="No activity yet" hint="Activity will appear as members join." />
+                <Empty title="No activity yet" hint="Activity will appear as members join or leave." />
             )}
 
             {events.length > 0 && (
-                <Card title={'Servers with joins (' + events.length + ')'} icon="pulse">
+                <Card title={'Recent activity (' + events.length + ')'} icon="pulse">
                     <div className="rows">
-                        {[...events].reverse().map((e, i) => (
-                            <div className="dist" key={(e.guildId || '') + i}>
-                                <span className="dist-ico dist-ico-good"><Icon name="users" size={13} /></span>
-                                <span className="dist-name">Member joined <strong>{e.guildName}</strong></span>
-                                <span className="dist-count">{num(e.count)}</span>
-                                <span className="dist-meta">{timeAgo(e.time)}</span>
-                            </div>
-                        ))}
+                        {events.map((e, i) => {
+                            const meta = LABELS[e.type] || { text: String(e.type || 'Event').replace(/_/g, ' '), tone: '' };
+                            return (
+                                <div className="dist" key={(e.id || e.guildId || 'event') + '-' + i}>
+                                    <span className={'dist-ico ' + meta.tone}><Icon name="users" size={13} /></span>
+                                    <span className="dist-name">
+                                        {meta.text} <strong>{e.guildName || e.guildId}</strong>
+                                        {e.userTag ? <span className="sub"> · {e.userTag}</span> : null}
+                                    </span>
+                                    <span className="dist-meta">{timeAgo(e.time)}</span>
+                                </div>
+                            );
+                        })}
                     </div>
                 </Card>
             )}

@@ -221,6 +221,17 @@ function unregisterPanel(messageId) {
     }
 }
 
+// Drop the panel registered in a channel (dashboard "remove panel"). The
+// message id isn't known to the caller, so we key on the channel instead.
+function removePanelsForChannel(guildId, channelId) {
+    if (!guildId || !channelId) return;
+    try {
+        getDb().prepare('DELETE FROM temp_vc_panels WHERE guild_id = ? AND channel_id = ?').run(guildId, channelId);
+    } catch (err) {
+        logError(err, 'tempvoice', 'removePanelsForChannel');
+    }
+}
+
 // ──────────────────── Spawn lifecycle ────────────────────
 
 // Returns the channel on success, null on failure, or the reused channel.
@@ -656,6 +667,7 @@ module.exports = {
     registerPanel,
     getPanels,
     unregisterPanel,
+    removePanelsForChannel,
     updatePanels,
     spawnChannel,
     cancelDeletion,

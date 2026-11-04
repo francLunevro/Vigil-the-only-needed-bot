@@ -10,12 +10,12 @@ function createBanAppeal(guildId, userId, userTag, reason, message) {
     db.prepare('INSERT INTO ban_appeals (id, guild_id, user_id, user_tag, reason, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, guildId, userId, userTag, reason, message, 'pending', now);
 
-    return getBanAppeal(id);
+    return getBanAppeal(guildId, id);
 }
 
-function getBanAppeal(appealId) {
+function getBanAppeal(guildId, appealId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM ban_appeals WHERE id = ?').get(appealId);
+    return db.prepare('SELECT * FROM ban_appeals WHERE guild_id = ? AND id = ?').get(guildId, appealId);
 }
 
 function getBanAppeals(guildId, status = null) {
@@ -26,7 +26,17 @@ function getBanAppeals(guildId, status = null) {
     return db.prepare('SELECT * FROM ban_appeals WHERE guild_id = ? ORDER BY created_at DESC').all(guildId);
 }
 
-function updateBanAppealStatus(appealId, newStatus, reviewedBy = null, reviewNote = null) {
+// One member's appeals — the member file's view (src/memberFile.js), newest
+// first. Guild-scoped like getBanAppeals, so another server's id matches
+// nothing.
+function getBanAppealsForUser(guildId, userId, limit = 25) {
+    const db = getDb();
+    const safeLimit = Math.min(limit || 25, 100);
+    return db.prepare('SELECT * FROM ban_appeals WHERE guild_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?')
+        .all(guildId, userId, safeLimit);
+}
+
+function updateBanAppealStatus(guildId, appealId, newStatus, reviewedBy = null, reviewNote = null) {
     const db = getDb();
     const validStatuses = ['pending', 'approved', 'denied'];
     if (!validStatuses.includes(newStatus)) {
@@ -45,16 +55,16 @@ function updateBanAppealStatus(appealId, newStatus, reviewedBy = null, reviewNot
         params.push(reviewNote);
     }
 
-    query += ' WHERE id = ?';
-    params.push(appealId);
+    query += ' WHERE guild_id = ? AND id = ?';
+    params.push(guildId, appealId);
 
     const result = db.prepare(query).run(...params);
     return result.changes > 0;
 }
 
-function deleteBanAppeal(appealId) {
+function deleteBanAppeal(guildId, appealId) {
     const db = getDb();
-    const result = db.prepare('DELETE FROM ban_appeals WHERE id = ?').run(appealId);
+    const result = db.prepare('DELETE FROM ban_appeals WHERE guild_id = ? AND id = ?').run(guildId, appealId);
     return result.changes > 0;
 }
 
@@ -72,6 +82,7 @@ module.exports = {
     createBanAppeal,
     getBanAppeal,
     getBanAppeals,
+    getBanAppealsForUser,
     updateBanAppealStatus,
     deleteBanAppeal,
     getBanAppealCount,

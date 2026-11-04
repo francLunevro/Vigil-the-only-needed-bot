@@ -444,6 +444,7 @@ a { color: var(--accent); }
 .dist-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .dist-ico { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0; background: var(--bg-elev); color: var(--text-muted); }
 .dist-ico-good { background: rgba(48, 209, 88, 0.12); color: var(--good); }
+.dist-ico-bad { background: rgba(255, 69, 58, 0.12); color: var(--bad); }
 .dist-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .dist-name strong { color: var(--text); }
 .dist-count { font-weight: 700; font-family: ui-monospace, monospace; font-size: 13px; }

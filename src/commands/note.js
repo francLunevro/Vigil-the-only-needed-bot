@@ -56,7 +56,7 @@ async function executeNote(interaction) {
         const noteId = interaction.options.getString('id');
         const newText = interaction.options.getString('text');
 
-        const updated = editNote(noteId, newText);
+        const updated = editNote(guild.id, noteId, newText);
         if (!updated) {
             return interaction.reply({ content: '❌ Note not found. Check the ID with `/note list @user`.', ephemeral: true });
         }
@@ -74,7 +74,7 @@ async function executeNote(interaction) {
     } else if (sub === 'remove') {
         const noteId = interaction.options.getString('id');
 
-        const removed = removeNote(noteId);
+        const removed = removeNote(guild.id, noteId);
         if (!removed) {
             return interaction.reply({ content: '❌ Note not found. Check the ID with `/note list @user`.', ephemeral: true });
         }

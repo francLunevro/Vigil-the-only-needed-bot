@@ -255,7 +255,7 @@ test('approving a report posts "Report accepted" to the log channel', async () =
     assert.ok(userField.value.includes('**Last case:** `WARN`'));
     assert.ok(embed.data.fields.some((f) => f.name === 'Highlighted message(s)' && f.value === 'flag message'));
     assert.ok(embed.data.fields.some((f) => f.name === 'Reported by' && f.value.includes('Alice#1234')));
-    assert.strictEqual(embed.data.footer.text, 'kestrys. accepted this report');
+    assert.strictEqual(embed.data.footer.text, (process.env.OWNER_ID || 'dashboard') + ' accepted this report');
     assert.strictEqual(embed.data.thumbnail.url, 'https://cdn.example/avatar-128.png');
 });
 
@@ -271,7 +271,7 @@ test('dismissing a report posts "Report dismissed" to the log channel', async ()
     const embed = sent[0].msg.embeds[0];
     assert.strictEqual(embed.data.title, '🔕 Report dismissed');
     assert.strictEqual(embed.data.color, 0x95A5A6);
-    assert.strictEqual(embed.data.footer.text, 'kestrys. dismissed this report');
+    assert.strictEqual(embed.data.footer.text, (process.env.OWNER_ID || 'dashboard') + ' dismissed this report');
 });
 
 test('sendLog delivers a mod action embed through the moderation category', async () => {

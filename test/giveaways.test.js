@@ -104,6 +104,24 @@ test('filterEligibleEntrants: role-gated drops ineligible + unknown members', ()
 
 // ── v2: colors ──
 
+test('parseWinnerIds accepts the stored comma form and legacy JSON rows', () => {
+    // The store persists a comma-joined list; older builds and fixtures stored a
+    // JSON array. Both must come back as an array of id strings — JSON.parse alone
+    // turned a single id into a number and threw for two or more.
+    assert.deepStrictEqual(gw.parseWinnerIds('a,b'), ['a', 'b']);
+    assert.deepStrictEqual(gw.parseWinnerIds('a'), ['a']);
+    assert.deepStrictEqual(gw.parseWinnerIds('["a","b"]'), ['a', 'b']);
+    assert.deepStrictEqual(gw.parseWinnerIds(['a', 'b']), ['a', 'b']);
+    assert.deepStrictEqual(gw.parseWinnerIds(null), []);
+    assert.deepStrictEqual(gw.parseWinnerIds(''), []);
+    assert.deepStrictEqual(gw.parseWinnerIds(' , '), []);
+    assert.deepStrictEqual(gw.parseWinnerIds('[]'), []);
+    // Every shape must be an array so callers can rely on .length and .join.
+    for (const value of ['a,b', 'a', '["a"]', null]) {
+        assert.ok(Array.isArray(gw.parseWinnerIds(value)));
+    }
+});
+
 test('parseHexColor handles #hex, bare hex, and rejects garbage', () => {
     assert.strictEqual(gw.parseHexColor('#ff5500'), 0xff5500);
     assert.strictEqual(gw.parseHexColor('ff5500'), 0xff5500);

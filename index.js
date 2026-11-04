@@ -14,11 +14,13 @@ const { setLoggerClient, sendLog } = require('./src/logging');
 const { findReactionRole } = require('./src/reactionRoles');
 const { setInviteClient, handleInviteCreate, handleInviteDelete } = require('./src/invites');
 const { setTicketClient, startInactivityCheck, stopInactivityCheck } = require('./src/tickets');
+const { startTicketSlaSweeper, stopTicketSlaSweeper } = require('./src/ticketSla');
 const { setGiveawayClient, startGiveawayCheck, stopGiveawayCheck } = require('./src/giveaways');
-const { startServerStats, stopServerStats, refreshGuildStats } = require('./src/serverStats');
+const { startServerStats, stopServerStats, scheduleGuildStatsRefresh } = require('./src/serverStats');
 const { setVoiceClient, enableDiscordJsVoice, handleBotVoiceUpdate, stopVoicePresence } = require('./src/voicePresence');
 const { handleVoiceStateUpdate: handleTempVoiceUpdate, stopTempVoice } = require('./src/tempVoice');
 const { setTempBanClient, startTempBanSweeper, stopTempBanSweeper } = require('./src/tempBans');
+const { setTempRoleClient, startTempRoleSweeper, stopTempRoleSweeper } = require('./src/tempRoles');
 
 // ─── Command Registry ───
 const { runCommand } = require('./src/commandPipeline');
@@ -61,6 +63,7 @@ setLoggerClient(client);
 setInviteClient(client);
 setVoiceClient(client);
 setTempBanClient(client);
+setTempRoleClient(client);
 // @discordjs/voice — lets the bot join a VC from an idle state (the REST
 // move endpoint can only move a bot that is already connected).
 if (!enableDiscordJsVoice()) {
@@ -118,13 +121,16 @@ for (const event of allEvents) {
 }
 
 // ── Live server-stats refresh (join / leave / boost changes) ──
-// Fires on top of the registered events so stat channels update instantly
-// instead of waiting for the 10-minute sweep.
-client.on(Events.GuildMemberAdd, (member) => { refreshGuildStats(member.guild).catch((err) => logError(err, 'event', 'refreshGuildStats')); });
-client.on(Events.GuildMemberRemove, (member) => { refreshGuildStats(member.guild).catch((err) => logError(err, 'event', 'refreshGuildStats')); });
+// Fires on top of the registered events so stat channels update promptly
+// instead of waiting for the 10-minute sweep. Scheduling is debounced per
+// guild (and paced per channel) inside serverStats, so a join raid becomes one
+// refresh instead of hundreds of rate-limited channel renames. Never throws —
+// failures are logged by the scheduler itself.
+client.on(Events.GuildMemberAdd, (member) => { scheduleGuildStatsRefresh(member.guild); });
+client.on(Events.GuildMemberRemove, (member) => { scheduleGuildStatsRefresh(member.guild); });
 client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
     if ((oldMember.premiumSince || null) !== (newMember.premiumSince || null)) {
-        refreshGuildStats(newMember.guild).catch((err) => logError(err, 'event', 'refreshGuildStats'));
+        scheduleGuildStatsRefresh(newMember.guild);
     }
 });
 
@@ -209,7 +215,9 @@ setDashboardClient(client, process.env.DASHBOARD_PASSWORD);
 setTicketClient(client);
 const app = createDashboard();
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// Kept as a handle so shutdown can stop accepting connections and let the
+// requests already in flight finish (see src/shutdown.js).
+const httpServer = app.listen(PORT, () => {
     console.log('Dashboard running on port ' + PORT);
 });
 
@@ -219,22 +227,30 @@ app.listen(PORT, () => {
 
 const { closeDb, getDb, backupDatabase, startDataRetentionSweeper, stopDataRetentionSweeper } = require('./src/db');
 
-function shutdown(signal) {
-    console.log('\n[Bot] Received ' + signal + '. Shutting down gracefully...');
-    stopInactivityCheck();
-    stopGiveawayCheck();
-    stopServerStats();
-    stopVoicePresence();
-    stopTempVoice();
-    stopTempBanSweeper();
-    stopReminderChecker();
-    stopScheduledPoster();
-    stopDataRetentionSweeper();
-    closeDb();
-    client.destroy();
-    console.log('[Bot] Goodbye!');
-    process.exit(0);
-}
+const { createShutdown } = require('./src/shutdown');
+const shutdown = createShutdown({
+    server: httpServer,
+    client,
+    closeDb,
+    stopTimers: [
+        app.locals.stopEventStreams,
+        stopInactivityCheck,
+        stopTicketSlaSweeper,
+        stopGiveawayCheck,
+        stopServerStats,
+        stopVoicePresence,
+        stopTempVoice,
+        stopTempBanSweeper,
+        stopTempRoleSweeper,
+        stopReminderChecker,
+        stopScheduledPoster,
+        stopDataRetentionSweeper,
+    ],
+    log: console.log,
+});
+// /shutdown (Discord) uses the same path, so it stops the same work and waits
+// for in-flight requests instead of calling process.exit() from the handler.
+global.gracefulShutdown = shutdown;
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
@@ -259,9 +275,9 @@ process.on('uncaughtException', (err) => {
 // ──────────────────── Scheduled Database Backups ────────────────────
 // Snapshot bot.db shortly after boot, then once per day. The dashboard can
 // also trigger backups manually and download/delete them.
-function runScheduledBackup() {
+async function runScheduledBackup() {
     try {
-        const r = backupDatabase();
+        const r = await backupDatabase();
         if (r) console.log('[Backup] Created ' + r.name + ' (' + (r.size / 1024).toFixed(1) + ' KB)');
     } catch (err) {
         logError(err, 'backup');
@@ -303,10 +319,14 @@ setErrorListener((entry) => {
 
 client.login(process.env.BOT_TOKEN).then(() => {
     startInactivityCheck(client);
+    // Ticket SLA: boot sweep first, so tickets that passed their threshold while
+    // the bot was offline are alerted rather than silently forgotten.
+    startTicketSlaSweeper(client);
     setGiveawayClient(client);
     startGiveawayCheck();
     startServerStats(client);
     startTempBanSweeper();
+    startTempRoleSweeper();
     startReminderChecker();
     startScheduledPoster();
     startDataRetentionSweeper();

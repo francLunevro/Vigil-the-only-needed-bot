@@ -18,7 +18,8 @@ after(async () => {
 });
 
 test('health endpoint completes without writing headers after the response', async () => {
-    setDashboardClient({ guilds: { cache: new Map() } }, 'test-password');
+    // A connected client: /health asks isReady() now instead of assuming ok.
+    setDashboardClient({ guilds: { cache: new Map() }, isReady: () => true }, 'test-password');
     const app = createDashboard();
     const server = http.createServer(app);
 

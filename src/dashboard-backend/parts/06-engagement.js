@@ -2,16 +2,19 @@
 // Reaction roles, role menus, reminders, giveaways, and polls /
 // announcements sent through the bot.
 
-const { getDb } = require('../../db');
+const { getDb, recordAuditTrail } = require('../../db');
 const { getReactionRoles, addReactionRole, removeReactionRole } = require('../../reactionRoles');
-const { createRoleMenu, getRoleMenus, removeRoleMenu, addRoleMenuOption, getRoleMenuOptions, removeRoleMenuOption } = require('../../roleMenus');
+const { createRoleMenu, getRoleMenu, getRoleMenus, removeRoleMenu, addRoleMenuOption, getRoleMenuOptions, removeRoleMenuOption } = require('../../roleMenus');
 const { logError } = require('../../logError');
+const { getGuildConfig } = require('../../config');
+const custom = require('../../customCommands');
 const { sanitizeForDB, sanitizeForEmbed } = require('../../helpers');
 const { EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder } = require('discord.js');
 const { getClient } = require('../core');
+const { parseWinnerIds } = require('../../giveaways');
 
 function register(app, ctx) {
-    const { requireAuth, checkOwner, filterByScope } = ctx;
+    const { requireAuth, checkOwner, filterByScope, getSessionUser } = ctx;
 
     // ── Reaction Roles API ──
     app.get('/api/server/:id/reaction-roles', requireAuth, (req, res) => {
@@ -117,6 +120,31 @@ function register(app, ctx) {
         } catch { res.json({ menus: [], channels: [], rolesList: [] }); }
     });
 
+    // Options for one role menu. The vanilla editor fetched this URL, but the
+    // route had never been registered — so its options list always came back
+    // 404 and the editor was silently unusable. It reads the same rows the
+    // publish route uses, so the two can't disagree.
+    app.get('/api/server/:id/role-menus/:messageId/options', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            if (!getRoleMenu(guild.id, req.params.messageId)) return res.status(404).json({ error: 'Menu not found' });
+            const options = getRoleMenuOptions(guild.id, req.params.messageId).map(o => ({
+                roleId: o.role_id,
+                label: o.label,
+                emoji: o.emoji,
+                description: o.description,
+                sortOrder: o.sort_order,
+            }));
+            res.json({ options });
+        } catch (err) {
+            logError(err, 'dashboard', 'rolemenu_options');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
     app.post('/api/server/:id/role-menus', requireAuth, async (req, res) => {
         const client = getClient();
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
@@ -136,6 +164,8 @@ function register(app, ctx) {
                 .setTimestamp();
             const msg = await channel.send({ embeds: [embed] });
             createRoleMenu(guild.id, msg.id, channelId, title || 'Self-Assignable Roles');
+            // The menu's title is user-authored text, so only ids are recorded.
+            recordAuditTrail({ type: 'rolemenu', userId: getSessionUser(req), guildId: guild.id, action: 'rolemenu.create', details: { menuId: msg.id } });
             res.json({ success: true, messageId: msg.id, menu: getRoleMenus(guild.id).find(m => m.message_id === msg.id) });
         } catch (err) {
             logError(err, 'dashboard', 'rolemenu_create');
@@ -155,8 +185,12 @@ function register(app, ctx) {
             if (!role) return res.status(400).json({ error: 'Role not found' });
             if (role.managed) return res.status(400).json({ error: 'Cannot add managed/bot roles' });
             if (role.comparePositionTo(guild.members.me.roles.highest) >= 0) return res.status(400).json({ error: 'Role is higher than bot\'s highest role' });
-            addRoleMenuOption(req.params.messageId, roleId, label || role.name, emoji || null, description || null);
-            res.json({ success: true, options: getRoleMenuOptions(req.params.messageId) });
+            if (!addRoleMenuOption(guild.id, req.params.messageId, roleId, label || role.name, emoji, description)) {
+                return res.status(404).json({ error: 'Menu not found' });
+            }
+            // The label and description are user-authored text; ids only.
+            recordAuditTrail({ type: 'rolemenu', userId: getSessionUser(req), guildId: guild.id, action: 'rolemenu.option.add', details: { menuId: String(req.params.messageId), roleId: String(roleId) } });
+            res.json({ success: true, options: getRoleMenuOptions(guild.id, req.params.messageId) });
         } catch (err) {
             logError(err, 'dashboard', 'rolemenu_add_option');
             res.status(500).json({ error: err.message });
@@ -171,9 +205,10 @@ function register(app, ctx) {
         const { roleId } = req.body;
         if (!roleId) return res.status(400).json({ error: 'Missing roleId' });
         try {
-            const result = removeRoleMenuOption(req.params.messageId, roleId);
+            const result = removeRoleMenuOption(guild.id, req.params.messageId, roleId);
             if (!result) return res.status(404).json({ error: 'Option not found' });
-            res.json({ success: true, options: getRoleMenuOptions(req.params.messageId) });
+            recordAuditTrail({ type: 'rolemenu', userId: getSessionUser(req), guildId: guild.id, action: 'rolemenu.option.remove', details: { menuId: String(req.params.messageId), roleId: String(roleId) } });
+            res.json({ success: true, options: getRoleMenuOptions(guild.id, req.params.messageId) });
         } catch (err) {
             logError(err, 'dashboard', 'rolemenu_remove_option');
             res.status(500).json({ error: err.message });
@@ -186,11 +221,13 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const channel = guild.channels.cache.get(req.query.channelId) || guild.channels.cache.get(req.body?.channelId);
+            const menu = getRoleMenu(guild.id, req.params.messageId);
+            if (!menu) return res.status(404).json({ error: 'Menu not found' });
+            const channel = guild.channels.cache.get(menu.channel_id);
             if (!channel) return res.status(400).json({ error: 'Channel not found' });
             const msg = await channel.messages.fetch(req.params.messageId).catch(() => null);
-            if (!msg) return res.status(404).json({ error: 'Message not found' });
-            const options = getRoleMenuOptions(req.params.messageId);
+            if (!msg || msg.author?.id !== client.user?.id || !msg.author?.id) return res.status(404).json({ error: 'Message not found' });
+            const options = getRoleMenuOptions(guild.id, req.params.messageId);
             if (!options.length) return res.status(400).json({ error: 'Menu has no roles! Add some first.' });
             const embed = new EmbedBuilder()
                 .setColor(0x5865F2)
@@ -211,6 +248,7 @@ function register(app, ctx) {
                 ));
             const row = new ActionRowBuilder().addComponents(selectMenu);
             await msg.edit({ embeds: [embed], components: [row] });
+            recordAuditTrail({ type: 'rolemenu', userId: getSessionUser(req), guildId: guild.id, action: 'rolemenu.publish', details: { menuId: String(req.params.messageId), optionCount: options.length } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'rolemenu_publish');
@@ -224,13 +262,16 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const channel = guild.channels.cache.get(req.query.channelId) || guild.channels.cache.get(req.body?.channelId);
+            const menu = getRoleMenu(guild.id, req.params.messageId);
+            if (!menu) return res.status(404).json({ error: 'Menu not found' });
+            const channel = guild.channels.cache.get(menu.channel_id);
             if (channel) {
                 const msg = await channel.messages.fetch(req.params.messageId).catch(() => null);
-                if (msg) await msg.delete().catch((err) => logError(err, 'dashboard', 'rolemenu_message_delete'));
+                if (msg?.author?.id === client.user?.id && msg?.author?.id) await msg.delete().catch((err) => logError(err, 'dashboard', 'rolemenu_message_delete'));
             }
             const result = removeRoleMenu(guild.id, req.params.messageId);
             if (!result) return res.status(404).json({ error: 'Menu not found' });
+            recordAuditTrail({ type: 'rolemenu', userId: getSessionUser(req), guildId: guild.id, action: 'rolemenu.remove', details: { menuId: String(req.params.messageId) } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'rolemenu_delete');
@@ -239,10 +280,23 @@ function register(app, ctx) {
     });
 
     // ── Reminders ──
+    // Reminders are personal Discord DMs, not guild records. Owner sessions
+    // (the shared password or OWNER_ID) keep the admin view over every pending
+    // reminder; a scoped session only ever sees and changes its own. The target
+    // id is never taken from the request body for a scoped caller, otherwise a
+    // limited dashboard account could DM any user on Discord.
+    function reminderTargetUserId(req) {
+        if (checkOwner(req)) return null; // null means "owner, caller supplies the target"
+        return req.discordUserId ? String(req.discordUserId) : '';
+    }
+
     app.get('/api/reminders', requireAuth, (req, res) => {
         try {
             const reminders = require('../../reminders');
-            const all = reminders.getAllPending();
+            const target = reminderTargetUserId(req);
+            const all = target === null
+                ? reminders.getAllPending()
+                : (target ? reminders.getUserReminders(target) : []);
             res.json(all.slice(0, 50).map(r => ({
                 id: r.id, text: r.text.slice(0, 100),
                 remindAt: r.remindAt, createdAt: r.createdAt, userId: r.userId,
@@ -253,11 +307,22 @@ function register(app, ctx) {
     app.post('/api/reminders', requireAuth, async (req, res) => {
         const client = getClient();
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
-        const { userId, channelId, text, durationMs } = req.body;
-        if (!userId || !text || !durationMs) return res.status(400).json({ error: 'Missing required fields' });
+        const { userId, channelId, text, durationMs } = req.body || {};
+        const scopedTarget = reminderTargetUserId(req);
+        const targetUserId = scopedTarget === null ? String(userId || '') : scopedTarget;
+        if (!targetUserId) return res.status(400).json({ error: 'Missing userId' });
+        if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'Missing text' });
+        if (text.length > 2000) return res.status(400).json({ error: 'Reminder text is limited to 2000 characters' });
+        const delay = Number(durationMs);
+        if (!Number.isFinite(delay) || delay <= 0 || delay > 365 * 24 * 60 * 60 * 1000) {
+            return res.status(400).json({ error: 'Invalid reminder delay' });
+        }
         try {
             const reminders = require('../../reminders');
-            const reminder = reminders.addReminder(userId, channelId || null, text, durationMs);
+            const reminder = reminders.addReminder(targetUserId, channelId || null, text, delay);
+            // The reminder body is user content and stays out of the log; the id,
+            // the target and the delay are enough to describe the change.
+            recordAuditTrail({ type: 'reminder', userId: getSessionUser(req), action: 'reminder.create', details: { reminderId: reminder.id, targetUserId, durationMs: delay } });
             res.json({ success: true, reminder });
         } catch (err) {
             logError(err, 'dashboard', 'reminder_create');
@@ -268,12 +333,14 @@ function register(app, ctx) {
     app.delete('/api/reminders/:id', requireAuth, async (req, res) => {
         const client = getClient();
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
-        const { userId } = req.body;
-        if (!userId) return res.status(400).json({ error: 'Missing userId' });
+        const scopedTarget = reminderTargetUserId(req);
+        const targetUserId = scopedTarget === null ? String(req.body?.userId || '') : scopedTarget;
+        if (!targetUserId) return res.status(400).json({ error: 'Missing userId' });
         try {
             const reminders = require('../../reminders');
-            const result = reminders.removeReminder(req.params.id, userId);
+            const result = reminders.removeReminder(req.params.id, targetUserId);
             if (!result) return res.status(404).json({ error: 'Reminder not found' });
+            recordAuditTrail({ type: 'reminder', userId: getSessionUser(req), action: 'reminder.remove', details: { reminderId: String(req.params.id), targetUserId } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'reminder_delete');
@@ -297,7 +364,7 @@ function register(app, ctx) {
                 hostTag: g.host_tag || null,
                 endsAt: g.ends_at,
                 status: g.status,
-                winnerIds: g.winner_ids ? JSON.parse(g.winner_ids) : [],
+                winnerIds: parseWinnerIds(g.winner_ids),
                 endedAt: g.ended_at,
                 createdAt: g.created_at,
             })));
@@ -333,6 +400,7 @@ function register(app, ctx) {
                 description: description ? sanitizeForDB(description).slice(0, 500) : undefined,
             });
             await gw.postGiveaway(channel, g);
+            recordAuditTrail({ type: 'giveaway', userId: getSessionUser(req), guildId: guild.id, action: 'giveaway.create', details: { giveawayId: g.id, channelId: channel.id, winners: winnerCount } });
             res.json({ success: true, id: g.id });
         } catch (err) {
             logError(err, 'dashboard', 'giveaway_create');
@@ -343,7 +411,15 @@ function register(app, ctx) {
     app.post('/api/giveaways/end', requireAuth, async (req, res) => {
         try {
             if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can end giveaways' });
-            await require('../../giveaways').endGiveaway(String(req.body?.id || ''));
+            const endId = String(req.body?.id || '');
+            const ended = await require('../../giveaways').endGiveaway(endId);
+            // endGiveaway reports a no-op (unknown id, already ended) as { error }
+            // rather than throwing, so the entry is gated on a real end. The
+            // response below is unchanged either way.
+            if (ended && ended.success) {
+                const row = getDb().prepare('SELECT guild_id FROM giveaways WHERE id = ?').get(endId);
+                recordAuditTrail({ type: 'giveaway', userId: getSessionUser(req), guildId: row ? row.guild_id : null, action: 'giveaway.end', details: { giveawayId: endId, winners: (ended.winners || []).length } });
+            }
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message || 'Failed to end giveaway' });
@@ -353,8 +429,11 @@ function register(app, ctx) {
     app.post('/api/giveaways/cancel', requireAuth, (req, res) => {
         try {
             if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can cancel giveaways' });
-            const ok = require('../../giveaways').cancelGiveaway(String(req.body?.id || ''));
-            if (!ok) return res.status(400).json({ error: 'Giveaway not found or not active' });
+            const result = require('../../giveaways').cancelGiveaway(String(req.body?.id || ''));
+            if (!result.success) return res.status(400).json({ error: 'Giveaway not found or not active' });
+            const cancelledId = String(req.body?.id || '');
+            const row = getDb().prepare('SELECT guild_id FROM giveaways WHERE id = ?').get(cancelledId);
+            recordAuditTrail({ type: 'giveaway', userId: getSessionUser(req), guildId: row ? row.guild_id : null, action: 'giveaway.cancel', details: { giveawayId: cancelledId } });
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message || 'Failed to cancel giveaway' });
@@ -364,7 +443,15 @@ function register(app, ctx) {
     app.post('/api/giveaways/reroll', requireAuth, async (req, res) => {
         try {
             if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can reroll giveaways' });
-            const winners = await require('../../giveaways').rerollGiveaway(String(req.body?.id || ''));
+            const rerollId = String(req.body?.id || '');
+            const winners = await require('../../giveaways').rerollGiveaway(rerollId);
+            // A rejected reroll comes back as { error } instead of throwing, so
+            // only a real reroll is recorded — and the response shape stays as it
+            // was, including the pass-through of the result object.
+            if (winners && winners.success) {
+                const row = getDb().prepare('SELECT guild_id FROM giveaways WHERE id = ?').get(rerollId);
+                recordAuditTrail({ type: 'giveaway', userId: getSessionUser(req), guildId: row ? row.guild_id : null, action: 'giveaway.reroll', details: { giveawayId: rerollId, winners: (winners.winners || []).length } });
+            }
             res.json({ success: true, winners: winners || [] });
         } catch (err) {
             res.status(500).json({ error: err.message || 'Failed to reroll' });
@@ -480,6 +567,94 @@ function register(app, ctx) {
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'announcement_create');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // ── Custom Commands ──
+    // Both of these live under /api/server/:id/*, so the tenant guard in part
+    // 02 has already refused anyone without a grant on the guild.
+    app.get('/api/server/:id/custom-commands', requireAuth, (req, res) => {
+        try {
+            res.json({
+                commands: custom.listCustomCommands(req.params.id),
+                prefix: getGuildConfig(req.params.id).prefix || ';',
+                maxPerGuild: custom.MAX_PER_GUILD,
+            });
+        } catch (err) {
+            logError(err, 'dashboard', 'custom_commands_list');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/server/:id/custom-commands', requireAuth, (req, res) => {
+        const { name, response, asEmbed } = req.body || {};
+        try {
+            const result = custom.setCustomCommand(req.params.id, name, { response, asEmbed: !!asEmbed }, getSessionUser(req));
+            if (result.error) return res.status(400).json({ error: result.error });
+            res.json({ success: true, command: result.command, created: result.created });
+        } catch (err) {
+            logError(err, 'dashboard', 'custom_command_save');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.delete('/api/server/:id/custom-commands/:name', requireAuth, (req, res) => {
+        try {
+            const removed = custom.deleteCustomCommand(req.params.id, req.params.name);
+            if (!removed) return res.status(404).json({ error: 'No custom command with that name' });
+            res.json({ success: true });
+        } catch (err) {
+            logError(err, 'dashboard', 'custom_command_delete');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // ── Autoresponders ──
+    app.get('/api/server/:id/autoresponders', requireAuth, (req, res) => {
+        const client = getClient();
+        const guild = client ? client.guilds.cache.get(req.params.id) : null;
+        try {
+            const channels = guild
+                ? guild.channels.cache.filter(c => c.type === 0 || c.type === 5).sort((a, b) => a.position - b.position).map(c => ({ id: c.id, name: '#' + c.name }))
+                : [];
+            res.json({ responders: custom.listAutoresponders(req.params.id), channels, matchTypes: custom.MATCH_TYPES });
+        } catch (err) {
+            logError(err, 'dashboard', 'autoresponders_list');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/server/:id/autoresponders', requireAuth, (req, res) => {
+        const { trigger, response, matchType, channelId } = req.body || {};
+        try {
+            const result = custom.addAutoresponder(req.params.id, { trigger, response, matchType, channelId }, getSessionUser(req));
+            if (result.error) return res.status(400).json({ error: result.error });
+            res.json({ success: true, responder: result.responder });
+        } catch (err) {
+            logError(err, 'dashboard', 'autoresponder_create');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.patch('/api/server/:id/autoresponders/:rid', requireAuth, (req, res) => {
+        try {
+            const result = custom.updateAutoresponder(req.params.id, req.params.rid, req.body || {});
+            if (result.error) return res.status(400).json({ error: result.error });
+            res.json({ success: true, responder: result.responder });
+        } catch (err) {
+            logError(err, 'dashboard', 'autoresponder_update');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.delete('/api/server/:id/autoresponders/:rid', requireAuth, (req, res) => {
+        try {
+            const removed = custom.deleteAutoresponder(req.params.id, req.params.rid);
+            if (!removed) return res.status(404).json({ error: 'No autoresponder with that ID' });
+            res.json({ success: true });
+        } catch (err) {
+            logError(err, 'dashboard', 'autoresponder_delete');
             res.status(500).json({ error: err.message });
         }
     });

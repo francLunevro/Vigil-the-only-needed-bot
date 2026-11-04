@@ -1,6 +1,6 @@
 // Temp-isolated tests for the server stats module: computation, formatting,
 // DB lifecycle, and the refresh/rename loop.
-const { test, after } = require('node:test');
+const { test, after, mock } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
@@ -163,3 +163,146 @@ test('refresh: respects custom label and never throws on unmanageable channel', 
     await ss.refreshGuildStats(g); // must not throw
     assert.strictEqual(ch.name, 'x'); // untouched
 });
+
+// ── Burst coalescing & rename pacing ──
+// A raid used to fire one refresh per join event, and every refresh renamed the
+// counter channel: Discord's ~2 renames per 10 minutes per channel was spent
+// within seconds, every later rename 429'd, and the counter froze on a wrong
+// number until the next 10-minute sweep. Two layers replace that — a per-guild
+// debounce and per-channel pacing that re-queues a skipped rename instead of
+// dropping it.
+
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); await new Promise((r) => setImmediate(r)); };
+
+// Each test uses its own guild/channel ids and a clean scheduler, because the
+// pacing state is module-level (deliberately — it mirrors Discord's bucket).
+// The mocked clock starts at epoch 0, so pin it to the real time first:
+// otherwise every channel looks like it was renamed a moment ago (`since` of 0)
+// and the pacing layer defers everything.
+function withMockClock(fn) {
+    return async () => {
+        const realNow = Date.now();
+        mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+        mock.timers.setTime(realNow);
+        ss.resetStatsScheduler();
+        try {
+            await fn();
+        } finally {
+            ss.resetStatsScheduler();
+            mock.timers.reset();
+        }
+    };
+}
+
+test('pacing constant stays at or under Discord\'s rename refill rate', () => {
+    // Two renames per 10 minutes = one per 5 minutes. Going below that drains
+    // the bucket, which is the bug these tests exist to prevent.
+    assert.ok(
+        ss.MIN_RENAME_INTERVAL_MS >= 5 * 60 * 1000,
+        'MIN_RENAME_INTERVAL_MS must not be faster than ~1 rename per 5 minutes'
+    );
+});
+
+test('a single join still refreshes immediately (leading edge)', withMockClock(async () => {
+    const ch = makeChannel('lead1', 'old name');
+    const g = makeGuild({ id: 'lg1', memberCount: 12, channels: [ch] });
+    ss.setServerStat('lg1', 'lead1', 'members', null);
+
+    ss.scheduleGuildStatsRefresh(g);
+    await flush();
+
+    assert.strictEqual(ch.name, '👥 Members • 12', 'a lone event must not wait out the debounce window');
+    assert.strictEqual(ch.renames, 1);
+}));
+
+test('a join raid collapses into one refresh and two renames total', withMockClock(async () => {
+    const ch = makeChannel('burst1', 'old name');
+    const g = makeGuild({ id: 'bg1', memberCount: 100, channels: [ch] });
+    ss.setServerStat('bg1', 'burst1', 'members', null);
+
+    // One join on its own: refreshed at once.
+    ss.scheduleGuildStatsRefresh(g);
+    await flush();
+    assert.strictEqual(ch.renames, 1);
+
+    // A raid: 50 joins, each firing the member-add hook.
+    for (let i = 0; i < 50; i++) {
+        g.memberCount = 101 + i;
+        ss.scheduleGuildStatsRefresh(g);
+    }
+    await flush();
+    assert.strictEqual(ch.renames, 1, 'the burst must not rename while it is still landing');
+
+    // The coalesced trailing refresh runs, but the rename is paced out.
+    mock.timers.tick(ss.REFRESH_DEBOUNCE_MS);
+    await flush();
+    assert.strictEqual(ch.renames, 1, 'pacing holds the rename back, it is not attempted and 429\'d');
+
+    // The update is not lost: it lands as soon as the channel budget refills.
+    mock.timers.tick(ss.MIN_RENAME_INTERVAL_MS);
+    await flush();
+    assert.strictEqual(ch.name, '👥 Members • 150', 'the final count still arrives');
+    assert.strictEqual(ch.renames, 2, '50 joins must not become 50 renames');
+}));
+
+test('a rename skipped by pacing is re-queued, not dropped', withMockClock(async () => {
+    const ch = makeChannel('pace1', 'old name');
+    const g = makeGuild({ id: 'pg1', memberCount: 5, channels: [ch] });
+    ss.setServerStat('pg1', 'pace1', 'members', null);
+
+    const first = await ss.refreshGuildStats(g);
+    assert.deepStrictEqual(first.renamed, ['pace1']);
+    assert.deepStrictEqual(first.deferred, []);
+    assert.strictEqual(ch.name, '👥 Members • 5');
+
+    g.memberCount = 6;
+    const second = await ss.refreshGuildStats(g);
+    assert.deepStrictEqual(second.renamed, []);
+    assert.deepStrictEqual(second.deferred, ['pace1'], 'the caller can tell the update is pending');
+    assert.strictEqual(ch.name, '👥 Members • 5', 'stale until the budget refills, but scheduled');
+
+    mock.timers.tick(4 * 60 * 1000);
+    await flush();
+    assert.strictEqual(ch.name, '👥 Members • 5', 'still inside the 5-minute window');
+
+    mock.timers.tick(2 * 60 * 1000);
+    await flush();
+    assert.strictEqual(ch.name, '👥 Members • 6', 'the queued retry applied the missed update');
+}));
+
+test('a rename Discord rejects backs off instead of retrying', withMockClock(async () => {
+    const ch = makeChannel('rl1', 'old name');
+    ch.attempts = 0;
+    ch.setName = async () => { ch.attempts += 1; throw new Error('429 Too Many Requests'); };
+    const g = makeGuild({ id: 'rg1', memberCount: 9, channels: [ch] });
+    ss.setServerStat('rg1', 'rl1', 'members', null);
+
+    const out = await ss.refreshGuildStats(g);
+    assert.strictEqual(ch.attempts, 1);
+    assert.deepStrictEqual(out.deferred, ['rl1'], 'a failed rename is reported as deferred, not renamed');
+
+    mock.timers.tick(60 * 1000);
+    await flush();
+    assert.strictEqual(ch.attempts, 1, 'a rejected rename must not become a retry storm');
+
+    mock.timers.tick(5 * 60 * 1000);
+    await flush();
+    assert.strictEqual(ch.attempts, 2, 'one retry after the backoff, then it waits again');
+}));
+
+test('stopServerStats cancels queued refreshes', withMockClock(async () => {
+    const ch = makeChannel('stop1', 'old name');
+    const g = makeGuild({ id: 'sg1', memberCount: 3, channels: [ch] });
+    ss.setServerStat('sg1', 'stop1', 'members', null);
+
+    ss.scheduleGuildStatsRefresh(g); // leading edge
+    await flush();
+    g.memberCount = 4;
+    ss.scheduleGuildStatsRefresh(g); // queued behind the debounce window
+
+    ss.stopServerStats();
+    mock.timers.tick(60 * 60 * 1000);
+    await flush();
+
+    assert.strictEqual(ch.name, '👥 Members • 3', 'shutdown must not leave a rename in flight');
+}));

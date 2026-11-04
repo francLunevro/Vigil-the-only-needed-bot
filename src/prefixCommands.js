@@ -168,10 +168,15 @@ handlers.serverstats = async (message) => {
         if (channel.isThread && channel.isThread()) return message.reply('⚠️ Threads can\'t hold a counter — pick a voice or text channel.');
         const res = ss.setServerStat(gid, channel.id, type, label);
         if (res.error) return message.reply('❌ ' + res.error);
-        try { await ss.refreshGuildStats(message.guild); } catch {}
+        // Discord caps channel renames at ~2 per 10 minutes; a rename that hit
+        // that limit is queued, so don't promise the name is already live.
+        const refresh = await ss.refreshGuildStats(message.guild).catch(() => ({ renamed: [], deferred: [] }));
         const value = ss.computeStat(message.guild, message.guild.members, type);
+        const applied = (refresh.renamed || []).includes(channel.id)
+            ? 'now named **' + ss.formatStatName(type, value, label) + '**'
+            : 'queued to be named **' + ss.formatStatName(type, value, label) + '** once Discord\'s rename limit clears (~2 per 10 minutes)';
         const note = type === 'online' && value === 0 ? '\nℹ️ The **online** counter needs the **Presence Intent** enabled in the Discord Developer Portal to show live numbers.' : '';
-        return message.reply('✅ Counter set on <#' + channel.id + '> — now named **' + ss.formatStatName(type, value, label) + '**' + note);
+        return message.reply('✅ Counter set on <#' + channel.id + '> — ' + applied + note);
     }
 
     if (sub === 'remove') {

@@ -320,7 +320,10 @@ export default function ServerDetail({ id, navigate }) {
             {tab === 'channels' && <ChannelsTab serverId={id} reloadKey={reloadKey} />}
             {tab === 'modtools' && <ServerModTools serverId={id} reloadKey={reloadKey} />}
             {tab === 'settings' && <ServerSettings serverId={id} prefix={data.prefix}
-                embedColor={data.embedColor} onSaved={refresh} />}
+                embedColor={data.embedColor}
+                modDmEnabled={!data.modDm || data.modDm.enabled !== false}
+                appealInfo={(data.modDm && data.modDm.appealInfo) || ''}
+                onSaved={refresh} />}
 
             {tab === 'overview' && (
                 <>

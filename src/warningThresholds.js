@@ -6,6 +6,8 @@ const { getDb } = require('./db');
 const { getWarnings } = require('./warnings');
 const { createCase } = require('./modCases');
 const { logError } = require('./logError');
+const { formatDuration } = require('./helpers');
+const { sendPunishmentDm } = require('./modDm');
 
 // ──────────────────── Threshold Config ────────────────────
 
@@ -74,6 +76,10 @@ async function checkThresholds(guild, userId, _interaction) {
     if (member.permissions.has('Administrator') || member.permissions.has('ManageMessages')) return null;
 
     let actionResult = null;
+    // What the member is told, filled in by whichever action actually ran.
+    let receipt = null;
+    // Unchanged wording: it is the reason stored on the case and shown to staff.
+    const caseReason = 'Auto-punish at ' + warnCount + ' warnings';
 
     try {
         switch (threshold.action) {
@@ -81,27 +87,42 @@ async function checkThresholds(guild, userId, _interaction) {
                 if (!member.moderatable) break;
                 const durationMs = (threshold.duration || 10) * 60 * 1000; // default 10 min
                 await member.timeout(durationMs, 'Auto-punish: Reached ' + warnCount + ' warnings (threshold: ' + threshold.warnCount + ')');
-                createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'timeout', 'Auto-punish at ' + warnCount + ' warnings');
+                const modCase = createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'timeout', caseReason);
                 actionResult = 'timed out for ' + (threshold.duration || 10) + ' minutes';
+                receipt = {
+                    action: 'timeout', reason: caseReason,
+                    caseNumber: modCase ? modCase.case_number : null,
+                    durationLabel: formatDuration(durationMs),
+                    expiresAt: Date.now() + durationMs,
+                };
                 break;
             }
             case 'kick': {
                 if (!member.kickable) break;
                 await member.kick('Auto-punish: Reached ' + warnCount + ' warnings (threshold: ' + threshold.warnCount + ')');
-                createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'kick', 'Auto-punish at ' + warnCount + ' warnings');
+                const modCase = createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'kick', caseReason);
                 actionResult = 'kicked';
+                receipt = { action: 'kick', reason: caseReason, caseNumber: modCase ? modCase.case_number : null };
                 break;
             }
             case 'ban': {
                 if (!member.bannable) break;
                 await guild.bans.create(userId, { reason: 'Auto-punish: Reached ' + warnCount + ' warnings (threshold: ' + threshold.warnCount + ')' });
-                createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'ban', 'Auto-punish at ' + warnCount + ' warnings');
+                const modCase = createCase(guild.id, userId, guild.members.me.id, 'Auto-Mod', 'ban', caseReason);
                 actionResult = 'banned';
+                receipt = { action: 'ban', reason: caseReason, caseNumber: modCase ? modCase.case_number : null };
                 break;
             }
         }
     } catch (err) {
         logError(err, 'thresholds', 'auto_punish');
+    }
+
+    // An automatic punishment the member can't see the reason for is the worst
+    // kind of silence. sendPunishmentDm never throws, so this cannot undo the
+    // punishment above or fail the command that triggered it.
+    if (receipt) {
+        await sendPunishmentDm({ guild, user: member.user, ...receipt });
     }
 
     return actionResult;

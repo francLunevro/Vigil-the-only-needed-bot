@@ -33,14 +33,14 @@ test('create / get round-trip', () => {
     assert.ok(a.id);
     assert.strictEqual(a.status, 'pending');
     assert.strictEqual(a.guild_id, 'g1');
-    assert.strictEqual(getBanAppeal(a.id).user_tag, 'user#1');
+    assert.strictEqual(getBanAppeal(a.guild_id, a.id).user_tag, 'user#1');
 });
 
 test('approve records reviewer, timestamp and note', () => {
     const a = createBanAppeal('g1', 'u2', 'user#2', 'reason', 'please');
     const before = Date.now();
-    assert.strictEqual(updateBanAppealStatus(a.id, 'approved', 'mod#1', 'second chance'), true);
-    const row = getBanAppeal(a.id);
+    assert.strictEqual(updateBanAppealStatus(a.guild_id, a.id, 'approved', 'mod#1', 'second chance'), true);
+    const row = getBanAppeal(a.guild_id, a.id);
     assert.strictEqual(row.status, 'approved');
     assert.strictEqual(row.reviewed_by, 'mod#1');
     assert.strictEqual(row.review_note, 'second chance');
@@ -49,8 +49,8 @@ test('approve records reviewer, timestamp and note', () => {
 
 test('deny without a note still records the reviewer', () => {
     const a = createBanAppeal('g1', 'u3', 'user#3', 'reason', 'let me back');
-    assert.strictEqual(updateBanAppealStatus(a.id, 'denied', 'mod#2'), true);
-    const row = getBanAppeal(a.id);
+    assert.strictEqual(updateBanAppealStatus(a.guild_id, a.id, 'denied', 'mod#2'), true);
+    const row = getBanAppeal(a.guild_id, a.id);
     assert.strictEqual(row.status, 'denied');
     assert.strictEqual(row.reviewed_by, 'mod#2');
     assert.strictEqual(row.review_note, null);
@@ -58,20 +58,20 @@ test('deny without a note still records the reviewer', () => {
 
 test('status-only update leaves review metadata untouched', () => {
     const a = createBanAppeal('g1', 'u4', 'user#4', 'reason', 'hi');
-    updateBanAppealStatus(a.id, 'approved');
-    const row = getBanAppeal(a.id);
+    updateBanAppealStatus(a.guild_id, a.id, 'approved');
+    const row = getBanAppeal(a.guild_id, a.id);
     assert.strictEqual(row.status, 'approved');
     assert.strictEqual(row.reviewed_by, null);
 });
 
 test('invalid status is rejected', () => {
     const a = createBanAppeal('g1', 'u5', 'user#5', 'reason', 'hi');
-    assert.throws(() => updateBanAppealStatus(a.id, 'unbanned-lol'), /Invalid status/);
-    assert.strictEqual(getBanAppeal(a.id).status, 'pending');
+    assert.throws(() => updateBanAppealStatus(a.guild_id, a.id, 'unbanned-lol'), /Invalid status/);
+    assert.strictEqual(getBanAppeal(a.guild_id, a.id).status, 'pending');
 });
 
 test('updating a missing appeal reports no change', () => {
-    assert.strictEqual(updateBanAppealStatus('does-not-exist', 'approved', 'mod#1'), false);
+    assert.strictEqual(updateBanAppealStatus('g1', 'does-not-exist', 'approved', 'mod#1'), false);
 });
 
 test('listing is scoped per guild and filterable by status', () => {
@@ -90,7 +90,7 @@ test('counts respect guild and status', () => {
 
 test('delete removes the row', () => {
     const a = createBanAppeal('g3', 'u10', 'user#10', 'reason', 'bye');
-    assert.strictEqual(deleteBanAppeal(a.id), true);
-    assert.strictEqual(getBanAppeal(a.id), undefined);
-    assert.strictEqual(deleteBanAppeal(a.id), false);
+    assert.strictEqual(deleteBanAppeal(a.guild_id, a.id), true);
+    assert.strictEqual(getBanAppeal(a.guild_id, a.id), undefined);
+    assert.strictEqual(deleteBanAppeal(a.guild_id, a.id), false);
 });

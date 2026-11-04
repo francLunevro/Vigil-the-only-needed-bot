@@ -31,12 +31,18 @@ async function executeServerStats(interaction) {
         }
 
         await interaction.deferReply();
-        await refreshGuildStats(guild);
+        const refresh = await refreshGuildStats(guild);
         const row = getServerStats(guild.id).find(r => r.channel_id === channel.id);
         const value = computeStat(guild, guild.members, type);
         const name = formatStatName(type, value, label);
+        // Discord caps channel renames at ~2 per 10 minutes, so a counter added
+        // to a channel we just renamed is queued rather than applied — say so
+        // instead of claiming the name is already live.
+        const applied = refresh.renamed.includes(channel.id)
+            ? 'the channel is now named **' + name + '**'
+            : 'the channel will be named **' + name + '** as soon as Discord\'s rename limit clears (~2 per 10 minutes)';
         return interaction.editReply({
-            content: '✅ Counter set on <#' + channel.id + '> — the channel is now named **' + name + '**' +
+            content: '✅ Counter set on <#' + channel.id + '> — ' + applied +
                 (row && type === 'online' && value === 0 ? '\nℹ️ Note: the **online** counter needs the **Presence Intent** enabled in the Discord Developer Portal to show live numbers.' : ''),
         });
     }

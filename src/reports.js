@@ -2,7 +2,9 @@ const { getDb } = require('./db');
 
 // ─── Member Reports Module ───
 // Members report others; staff review pending reports in the dashboard and
-// either approve (opening a mod case) or dismiss them.
+// either approve or dismiss them. A review records the decision, the reviewer
+// and an optional note — and, when the dashboard passes one, the mod case that
+// was opened for it. It does not open a case on its own.
 
 const VALID_STATUSES = ['pending', 'approved', 'dismissed'];
 
@@ -12,12 +14,12 @@ function createReport(guildId, reporterId, reporterTag, targetId, targetTag, rea
     const now = Date.now();
     db.prepare('INSERT INTO reports (id, guild_id, reporter_id, reporter_tag, target_id, target_tag, reason, message_content, message_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, guildId, reporterId, reporterTag, targetId, targetTag, reason, messageContent, messageId, 'pending', now);
-    return getReport(id);
+    return getReport(guildId, id);
 }
 
-function getReport(reportId) {
+function getReport(guildId, reportId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM reports WHERE id = ?').get(reportId);
+    return db.prepare('SELECT * FROM reports WHERE guild_id = ? AND id = ?').get(guildId, reportId);
 }
 
 function getReports(guildId, status = null) {
@@ -28,7 +30,17 @@ function getReports(guildId, status = null) {
     return db.prepare('SELECT * FROM reports WHERE guild_id = ? ORDER BY created_at DESC').all(guildId);
 }
 
-function updateReportStatus(reportId, newStatus, reviewedBy = null, reviewNote = null, caseId = null) {
+// Reports filed against one member — the member file's view (src/memberFile.js).
+// Guild-scoped like every other accessor here, so an id from another server
+// matches nothing.
+function getReportsForTarget(guildId, targetId, limit = 25) {
+    const db = getDb();
+    const safeLimit = Math.min(limit || 25, 100);
+    return db.prepare('SELECT * FROM reports WHERE guild_id = ? AND target_id = ? ORDER BY created_at DESC LIMIT ?')
+        .all(guildId, targetId, safeLimit);
+}
+
+function updateReportStatus(guildId, reportId, newStatus, reviewedBy = null, reviewNote = null, caseId = null) {
     if (!VALID_STATUSES.includes(newStatus)) {
         throw new Error('Invalid status');
     }
@@ -47,15 +59,19 @@ function updateReportStatus(reportId, newStatus, reviewedBy = null, reviewNote =
         query += ', case_id = ?';
         params.push(caseId);
     }
-    query += ' WHERE id = ?';
-    params.push(reportId);
+    query += ' WHERE guild_id = ? AND id = ?';
+    params.push(guildId, reportId);
+    if (caseId) {
+        query += ' AND EXISTS (SELECT 1 FROM mod_cases WHERE guild_id = ? AND id = ?)';
+        params.push(guildId, caseId);
+    }
     const result = db.prepare(query).run(...params);
     return result.changes > 0;
 }
 
-function deleteReport(reportId) {
+function deleteReport(guildId, reportId) {
     const db = getDb();
-    const result = db.prepare('DELETE FROM reports WHERE id = ?').run(reportId);
+    const result = db.prepare('DELETE FROM reports WHERE guild_id = ? AND id = ?').run(guildId, reportId);
     return result.changes > 0;
 }
 
@@ -73,6 +89,7 @@ module.exports = {
     createReport,
     getReport,
     getReports,
+    getReportsForTarget,
     updateReportStatus,
     deleteReport,
     getReportCount,

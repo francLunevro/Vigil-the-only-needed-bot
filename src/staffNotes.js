@@ -13,12 +13,12 @@ function addNote(guildId, targetUserId, authorId, authorTag, note) {
     db.prepare('INSERT INTO staff_notes (id, guild_id, target_user_id, author_id, author_tag, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(id, guildId, targetUserId, authorId, authorTag, note, now);
 
-    return getNote(id);
+    return getNote(guildId, id);
 }
 
-function getNote(noteId) {
+function getNote(guildId, noteId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM staff_notes WHERE id = ?').get(noteId);
+    return db.prepare('SELECT * FROM staff_notes WHERE guild_id = ? AND id = ?').get(guildId, noteId);
 }
 
 function getNotesForUser(guildId, targetUserId) {
@@ -30,17 +30,17 @@ function getNotesForUser(guildId, targetUserId) {
     `).all(guildId, targetUserId);
 }
 
-function editNote(noteId, newNote) {
+function editNote(guildId, noteId, newNote) {
     const db = getDb();
-    const result = db.prepare('UPDATE staff_notes SET note = ?, updated_at = ? WHERE id = ?')
-        .run(newNote, Date.now(), noteId);
+    const result = db.prepare('UPDATE staff_notes SET note = ?, updated_at = ? WHERE guild_id = ? AND id = ?')
+        .run(newNote, Date.now(), guildId, noteId);
     if (result.changes === 0) return null;
-    return getNote(noteId);
+    return getNote(guildId, noteId);
 }
 
-function removeNote(noteId) {
+function removeNote(guildId, noteId) {
     const db = getDb();
-    const result = db.prepare('DELETE FROM staff_notes WHERE id = ?').run(noteId);
+    const result = db.prepare('DELETE FROM staff_notes WHERE guild_id = ? AND id = ?').run(guildId, noteId);
     return result.changes > 0;
 }
 

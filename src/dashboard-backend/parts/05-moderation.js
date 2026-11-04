@@ -3,15 +3,17 @@
 // ban appeals, moderation stats, message search, and the unified audit
 // log feed.
 
-const { getDb } = require('../../db');
+const { getDb, recordAuditTrail } = require('../../db');
 const { getThresholds, addThreshold, removeThreshold, DEFAULT_ACTIONS } = require('../../warningThresholds');
-const { createBanAppeal, getBanAppeals, updateBanAppealStatus, deleteBanAppeal, getBanAppealCount } = require('../../banAppeals');
+const { createBanAppeal, getBanAppeal, getBanAppeals, updateBanAppealStatus, deleteBanAppeal, getBanAppealCount } = require('../../banAppeals');
 const { getReports, getReport, updateReportStatus, deleteReport, getReportCount } = require('../../reports');
 const { getCases } = require('../../modCases');
 const { sendLog, modActionLogEmbed, userStatsValue } = require('../../logging');
 const { logError } = require('../../logError');
-const { sanitizeForDB } = require('../../helpers');
+const { sanitizeForDB, formatDuration } = require('../../helpers');
+const { sendPunishmentDm } = require('../../modDm');
 const { getClient } = require('../core');
+const tempRoles = require('../../tempRoles');
 
 function register(app, ctx) {
     const { requireAuth, checkOwner, getSessionUser } = ctx;
@@ -32,7 +34,16 @@ function register(app, ctx) {
             const { createCase } = require('../../modCases');
             const sessionUser = getSessionUser(req);
             const warnings = addWarning(guild.id, userId, 'Dashboard (' + sessionUser + ')', safeReason);
-            createCase(guild.id, userId, sessionUser, 'Dashboard', 'warn', safeReason);
+            const modCase = createCase(guild.id, userId, sessionUser, 'Dashboard', 'warn', safeReason);
+            // The reason is user-authored text: it reaches Discord's own reason
+            // field, never the audit row, which carries ids and counts only.
+            recordAuditTrail({ type: 'mod', userId: sessionUser, guildId: guild.id, action: 'mod.warn', details: { targetUserId: String(userId), warnings: warnings.length } });
+            // Same receipt the Discord command sends, from the same helper, so
+            // the two surfaces can't drift.
+            await sendPunishmentDm({
+                guild, userId, action: 'warn', reason: safeReason,
+                caseNumber: modCase ? modCase.case_number : null,
+            });
             res.json({ success: true, warningCount: warnings.length });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -56,7 +67,13 @@ function register(app, ctx) {
 
             await member.kick('[Dashboard] ' + safeReason);
             const { createCase } = require('../../modCases');
-            createCase(guild.id, userId, getSessionUser(req), 'Dashboard', 'kick', safeReason);
+            const sessionUser = getSessionUser(req);
+            const modCase = createCase(guild.id, userId, sessionUser, 'Dashboard', 'kick', safeReason);
+            recordAuditTrail({ type: 'mod', userId: sessionUser, guildId: guild.id, action: 'mod.kick', details: { targetUserId: String(userId) } });
+            await sendPunishmentDm({
+                guild, user: member.user, userId, action: 'kick', reason: safeReason,
+                caseNumber: modCase ? modCase.case_number : null,
+            });
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -77,7 +94,13 @@ function register(app, ctx) {
             const deleteSeconds = deleteMessages === '24hours' ? 86400 : (deleteMessages === '6hours' ? 21600 : (deleteMessages === 'hour' ? 3600 : 0));
             await guild.bans.create(userId, { reason: '[Dashboard] ' + safeReason, deleteMessageSeconds: deleteSeconds });
             const { createCase } = require('../../modCases');
-            createCase(guild.id, userId, getSessionUser(req), 'Dashboard', 'ban', safeReason);
+            const sessionUser = getSessionUser(req);
+            const modCase = createCase(guild.id, userId, sessionUser, 'Dashboard', 'ban', safeReason);
+            recordAuditTrail({ type: 'mod', userId: sessionUser, guildId: guild.id, action: 'mod.ban', details: { targetUserId: String(userId) } });
+            await sendPunishmentDm({
+                guild, userId, action: 'ban', reason: safeReason,
+                caseNumber: modCase ? modCase.case_number : null,
+            });
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -109,9 +132,82 @@ function register(app, ctx) {
 
             await member.timeout(ms, '[Dashboard] ' + safeReason);
             const { createCase } = require('../../modCases');
-            createCase(guild.id, userId, getSessionUser(req), 'Dashboard', 'timeout', safeReason);
+            const sessionUser = getSessionUser(req);
+            const modCase = createCase(guild.id, userId, sessionUser, 'Dashboard', 'timeout', safeReason);
+            recordAuditTrail({ type: 'mod', userId: sessionUser, guildId: guild.id, action: 'mod.timeout', details: { targetUserId: String(userId), durationMs: ms } });
+            await sendPunishmentDm({
+                guild, user: member.user, userId, action: 'timeout', reason: safeReason,
+                caseNumber: modCase ? modCase.case_number : null,
+                durationLabel: formatDuration(ms),
+                expiresAt: Date.now() + ms,
+            });
             res.json({ success: true });
         } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // ── Temporary Roles API ──
+    // The grant/revoke routes are owner-only, same as every other mod action.
+    app.get('/api/server/:id/temp-roles', requireAuth, (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        try {
+            const roles = guild.roles.cache
+                .filter(r => r.name !== '@everyone' && !r.managed)
+                .sort((a, b) => b.position - a.position)
+                .map(r => ({ id: r.id, name: r.name }));
+            res.json({ entries: tempRoles.listTempRoles(guild.id), roles });
+        } catch (err) {
+            logError(err, 'dashboard', 'temp_roles_list');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.post('/api/server/:id/temp-roles', requireAuth, async (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can perform mod actions' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        const { userId, roleId, durationMs, reason } = req.body || {};
+        if (!userId || !roleId || !durationMs) return res.status(400).json({ error: 'Missing userId, roleId or durationMs' });
+        const role = guild.roles.cache.get(String(roleId));
+        try {
+            const sessionUser = getSessionUser(req);
+            const result = await tempRoles.grantTempRole({
+                guild, role, userId: String(userId), durationMs: Number(durationMs), grantedBy: sessionUser,
+            });
+            if (result.error) return res.status(400).json({ error: result.error });
+            const { createCase } = require('../../modCases');
+            createCase(guild.id, String(userId), sessionUser, 'Dashboard', 'temprole',
+                (role ? role.name : roleId) + ' until ' + new Date(result.entry.expiresAt).toISOString() +
+                (reason ? ' — ' + sanitizeForDB(reason).slice(0, 500) : ''));
+            res.json({ success: true, entry: result.entry, extended: result.extended });
+        } catch (err) {
+            logError(err, 'dashboard', 'temp_role_grant');
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    app.delete('/api/server/:id/temp-roles', requireAuth, async (req, res) => {
+        const client = getClient();
+        if (!client) return res.status(503).json({ error: 'Bot not ready' });
+        if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can perform mod actions' });
+        const guild = client.guilds.cache.get(req.params.id);
+        if (!guild) return res.status(404).json({ error: 'Server not found' });
+        const { userId, roleId } = req.body || {};
+        if (!userId || !roleId) return res.status(400).json({ error: 'Missing userId or roleId' });
+        try {
+            const result = await tempRoles.revokeTempRole({
+                guild, userId: String(userId), roleId: String(roleId), reason: 'Removed from dashboard by ' + getSessionUser(req),
+            });
+            if (result.error) return res.status(400).json({ error: result.error });
+            res.json({ success: true });
+        } catch (err) {
+            logError(err, 'dashboard', 'temp_role_revoke');
             res.status(500).json({ error: err.message });
         }
     });
@@ -146,7 +242,7 @@ function register(app, ctx) {
         if (!targetUserId || !note) return res.status(400).json({ error: 'Missing targetUserId or note' });
         const safeNote = sanitizeForDB(note).slice(0, 2000);
         const { addNote } = require('../../staffNotes');
-        const created = addNote(guild.id, targetUserId, 'dashboard', 'Dashboard', safeNote);
+        const created = addNote(guild.id, targetUserId, getSessionUser(req), 'Dashboard', safeNote);
         res.json({ success: true, note: created });
     });
 
@@ -154,7 +250,7 @@ function register(app, ctx) {
         const client = getClient();
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
         const { removeNote } = require('../../staffNotes');
-        const removed = removeNote(req.params.noteId);
+        const removed = removeNote(req.params.id, req.params.noteId);
         if (!removed) return res.status(404).json({ error: 'Note not found' });
         res.json({ success: true });
     });
@@ -255,15 +351,20 @@ function register(app, ctx) {
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
-        const { status, reviewedBy, reviewNote } = req.body;
-        if (!status) return res.status(400).json({ error: 'Missing status' });
+        const { status, reviewNote } = req.body;
+        if (!['pending', 'approved', 'denied'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
         try {
-            const result = updateBanAppealStatus(req.params.appealId, status, reviewedBy || 'Dashboard', reviewNote);
+            const appeal = getBanAppeal(guild.id, req.params.appealId);
+            if (!appeal) {
+                return res.status(404).json({ error: 'Appeal not found' });
+            }
+            const result = updateBanAppealStatus(guild.id, req.params.appealId, status, getSessionUser(req), reviewNote);
             if (!result) return res.status(404).json({ error: 'Appeal not found' });
+            recordAuditTrail({ type: 'staff', userId: getSessionUser(req), guildId: guild.id, action: 'appeal.review', details: { id: req.params.appealId, status } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'ban_appeal_update');
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: 'Could not complete request' });
         }
     });
 
@@ -273,12 +374,17 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const result = deleteBanAppeal(req.params.appealId);
+            const appeal = getBanAppeal(guild.id, req.params.appealId);
+            if (!appeal) {
+                return res.status(404).json({ error: 'Appeal not found' });
+            }
+            const result = deleteBanAppeal(guild.id, req.params.appealId);
             if (!result) return res.status(404).json({ error: 'Appeal not found' });
+            recordAuditTrail({ type: 'staff', userId: getSessionUser(req), guildId: guild.id, action: 'appeal.delete', details: { id: req.params.appealId } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'ban_appeal_delete');
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: 'Could not complete request' });
         }
     });
 
@@ -316,14 +422,23 @@ function register(app, ctx) {
         if (!client) return res.status(503).json({ error: 'Bot not ready' });
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
-        const { status, reviewedBy, reviewNote, caseId } = req.body;
-        if (!status) return res.status(400).json({ error: 'Missing status' });
+        const { status, reviewNote, caseId } = req.body;
+        if (!['pending', 'approved', 'dismissed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
         try {
-            const report = getReport(req.params.reportId);
-            const result = updateReportStatus(req.params.reportId, status, reviewedBy || 'Dashboard', reviewNote, caseId);
+            const report = getReport(guild.id, req.params.reportId);
+            if (!report) {
+                return res.status(404).json({ error: 'Report not found' });
+            }
+            if (caseId !== undefined && caseId !== null && (typeof caseId !== 'string' ||
+                !getDb().prepare('SELECT 1 FROM mod_cases WHERE guild_id = ? AND id = ?').get(guild.id, caseId))) {
+                return res.status(404).json({ error: 'Case not found' });
+            }
+            const result = updateReportStatus(guild.id, req.params.reportId, status, getSessionUser(req), reviewNote, caseId);
             if (!result) return res.status(404).json({ error: 'Report not found' });
-            res.json({ success: true });
             // Wick-style log entry announcing the review outcome (best-effort).
+            // Sent before the response so a failure here can still answer 500 —
+            // answering first and logging after left the outer catch writing
+            // headers that had already gone out.
             try {
                 const approved = status === 'approved';
                 const target = await client.users.fetch(report.target_id).catch(() => null);
@@ -333,7 +448,7 @@ function register(app, ctx) {
                     title: approved ? '✅ Report accepted' : '🔕 Report dismissed',
                     color: approved ? 0x2ECC71 : 0x95A5A6,
                     target,
-                    footerText: (reviewedBy || 'Dashboard') + (approved ? ' accepted this report' : ' dismissed this report'),
+                    footerText: getSessionUser(req) + (approved ? ' accepted this report' : ' dismissed this report'),
                     fields: [
                         { name: 'User', value: userStatsValue({ user: target, member, lastCase }) },
                         { name: 'Reason(s)', value: (report.reason || '—').slice(0, 1000) },
@@ -345,9 +460,11 @@ function register(app, ctx) {
             } catch (logErr) {
                 logError(logErr, 'dashboard', 'report_update_log');
             }
+            recordAuditTrail({ type: 'staff', userId: getSessionUser(req), guildId: guild.id, action: 'report.review', details: { id: req.params.reportId, status } });
+            res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'report_update');
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: 'Could not complete request' });
         }
     });
 
@@ -357,12 +474,17 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const result = deleteReport(req.params.reportId);
+            const report = getReport(guild.id, req.params.reportId);
+            if (!report) {
+                return res.status(404).json({ error: 'Report not found' });
+            }
+            const result = deleteReport(guild.id, req.params.reportId);
             if (!result) return res.status(404).json({ error: 'Report not found' });
+            recordAuditTrail({ type: 'staff', userId: getSessionUser(req), guildId: guild.id, action: 'report.delete', details: { id: req.params.reportId } });
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'report_delete');
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: 'Could not complete request' });
         }
     });
 

@@ -10,6 +10,14 @@ function setTempBanClient(discordClient) {
     client = discordClient;
 }
 
+// The member's pending temporary ban, or null. Read-only and guild-scoped —
+// the member file (src/memberFile.js) shows a live temp ban as an active
+// punishment without waiting for the sweeper to lift it.
+function getActiveTempBan(guildId, userId) {
+    const db = getDb();
+    return db.prepare('SELECT * FROM temp_bans WHERE guild_id = ? AND user_id = ?').get(guildId, userId) || null;
+}
+
 function sweepExpiredTempBans() {
     if (!client) return;
     const db = getDb();
@@ -53,4 +61,4 @@ function stopTempBanSweeper() {
     sweepInterval = null;
 }
 
-module.exports = { setTempBanClient, startTempBanSweeper, stopTempBanSweeper };
+module.exports = { setTempBanClient, getActiveTempBan, startTempBanSweeper, stopTempBanSweeper };

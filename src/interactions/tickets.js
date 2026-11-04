@@ -44,7 +44,7 @@ async function handleTicketCreate(interaction, parts) {
 
     if (typeId) {
         // Direct type specified — show questions modal
-        const type = require('../tickets').getPanelType(typeId);
+        const type = require('../tickets').getPanelType(typeId, guild.id);
         if (!type) return interaction.reply({ content: '❌ This ticket type no longer exists.', ephemeral: true });
         const { showQuestionsModal } = require('../tickets');
         return showQuestionsModal(interaction, type);
@@ -52,7 +52,7 @@ async function handleTicketCreate(interaction, parts) {
 
     // No type — show panel type selector
     const { showTicketTypeModal } = require('../tickets');
-    const panel = require('../tickets').getPanel(panelId);
+    const panel = require('../tickets').getPanel(panelId, guild.id);
     if (!panel) return interaction.reply({ content: '❌ This panel no longer exists.', ephemeral: true });
     await showTicketTypeModal(interaction, panel);
 }
@@ -124,7 +124,7 @@ async function handleTicketTypeSelect(interaction, _parts) {
     }
 
     const { showQuestionsModal } = require('../tickets');
-    const type = require('../tickets').getPanelType(typeId);
+    const type = require('../tickets').getPanelType(typeId, guild.id);
     if (!type) {
         return interaction.reply({ content: '❌ This ticket type no longer exists.', ephemeral: true });
     }

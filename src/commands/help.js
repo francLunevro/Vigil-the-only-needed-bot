@@ -81,7 +81,9 @@ const CATEGORIES = [
         commands: [
             { name: 'kick', desc: 'Kick a member from the server' },
             { name: 'ban', desc: 'Ban a member from the server' },
+            { name: 'tempban', desc: 'Ban a member for a set time, then auto-unban' },
             { name: 'unban', desc: 'Unban a user by ID' },
+            { name: 'temprole', desc: 'Give a role for a set time, then auto-remove it' },
             { name: 'timeout', desc: 'Timeout a member' },
             { name: 'untimeout', desc: 'Remove a timeout' },
             { name: 'warn', desc: 'Warn a member (with interactive form)' },
@@ -90,6 +92,7 @@ const CATEGORIES = [
             { name: 'lock', desc: 'Lock a channel' },
             { name: 'unlock', desc: 'Unlock a channel' },
             { name: 'history', desc: 'View moderation history for a user' },
+            { name: 'memberfile', desc: 'Open the full staff file for a member (staff only)' },
             { name: 'case', desc: 'View details of a specific moderation case' },
             { name: 'reason', desc: 'Update the reason for a moderation case' },
         ],
@@ -121,6 +124,15 @@ const CATEGORIES = [
         public: false,
         commands: [
             { name: 'rolemenu', desc: 'Create and manage dropdown role menus' },
+        ],
+    },
+    {
+        name: 'Custom Commands',
+        emoji: '⌨️',
+        public: false,
+        commands: [
+            { name: 'customcommand', desc: 'Write your own prefix commands (e.g. ;rules)' },
+            { name: 'autoresponder', desc: 'Reply automatically when a message matches a trigger' },
         ],
     },
     {
@@ -169,7 +181,7 @@ const CATEGORIES = [
         emoji: '🔍',
         public: false,
         commands: [
-            { name: 'logs', desc: 'Search through logged messages and events' },
+            { name: 'logs', desc: 'Search stored deleted and edited messages, paged 5 at a time' },
         ],
     },
     {

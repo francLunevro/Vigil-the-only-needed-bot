@@ -900,7 +900,7 @@ test('tvc_modal_limit accepts 0-99 and rejects out-of-range', async () => {
 // ──────────────────── Select menu fallbacks ────────────────────
 
 test('rm_ select with no configured menu gets the gone reply', async () => {
-    const i = makeInteraction({ type: 'select', customId: 'rm_123456', values: ['r1'] });
+    const i = makeInteraction({ type: 'select', customId: 'rm_123456', values: ['r1'], guild: makeGuild() });
     await handleInteraction(i);
     assert.match(i.__calls.reply[0].content, /no longer configured/);
 });

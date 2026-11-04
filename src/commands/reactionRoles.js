@@ -1,5 +1,6 @@
 const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { getReactionRoles, addReactionRole, removeAllForMessage } = require('../reactionRoles');
+const { hierarchyBlock } = require('../modGuard');
 // Normalize emoji string: convert Discord's <:name:id> or <a:name:id> to name:id
 function normalizeEmoji(str) {
     const m = str.match(/<a?:(\w+):(\d+)>/);
@@ -28,6 +29,13 @@ async function executeReactionRole(interaction) {
         }
         if (guild.members.me.roles.highest.position <= role.position) {
             return interaction.reply({ content: '\u26A0\uFE0F That role is higher than my highest role.', ephemeral: true });
+        }
+        // A reaction role hands the role to anyone who reacts, so configuring
+        // one for a role above your own rank is a way to hand out power you
+        // don't have.
+        const blocked = hierarchyBlock(interaction, null, role);
+        if (blocked) {
+            return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
         }
 
         await interaction.deferReply();

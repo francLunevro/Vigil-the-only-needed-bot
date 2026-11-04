@@ -70,6 +70,7 @@ The usual set, plus the thing that separates a real mod bot from a toy: **every 
 | `/timeout` / `/untimeout` | Time someone out (`60s` through `7d`), or take it back |
 | `/warn` | Warn them, and DM them about it |
 | `/warnings` / `/clearwarnings` | Look at or clear the history |
+| `/memberfile` | The whole file on one member: warnings, cases, notes, reports, appeals and tickets in one place (private to you) |
 | `/lock` / `/unlock` | Lock a channel down |
 | `/purge` | Bulk-delete up to 100 messages |
 | `/slowmode` | Set slowmode |
@@ -77,6 +78,10 @@ The usual set, plus the thing that separates a real mod bot from a toy: **every 
 | `/role` | Add or remove a role from someone |
 
 Then the case files: `/history @someone` for their whole record, `/case 12` for one case in detail, and `/reason 12 appeal approved, lifted early` to fix the reason later. That last one exists because punishments get reversed, and an audit trail that lies about why is worse than no audit trail.
+
+**One file per member.** `/memberfile @someone` — and the Member File card in the dashboard's Mod tools — puts everything on record in one place: warnings, cases and the punishments still running, staff notes, reports filed against them, ban appeals and their ticket history, merged into a single newest-first timeline with a count for each system. It reads each system through the module that already owns its table, so nothing is duplicated and a user ID from another server matches nothing. Staff-only, both ways: the Discord reply is ephemeral (staff notes are nobody else's business), and the dashboard route keeps the same session and per-server access guard as the rest of the app.
+
+**They get told, too.** Every warning, timeout, kick, temp-ban and ban sends the member a private message with the reason, the case number staff will quote back at them, how long it lasts and when it lifts, and how to appeal — with your own appeal instructions if you've set some in the dashboard's Server Settings. It's best-effort by design: most people who get banned have DMs closed and no longer share a server with the bot, so a receipt that doesn't go out is logged and otherwise ignored. It can't fail the punishment or undo it.
 
 **Rank is respected, and it's checked properly.** A moderator you granted `/ban` can't use it on someone above them, and can't hand out a role above their own highest one. The check compares the *person who ran the command* against the target — not the bot, which is what the old code did, and meant a grant was basically a licence to kick the admins. Owner accounts skip the check, and the confirm buttons re-check it when you click, in case roles moved while the prompt was open.
 
@@ -100,7 +105,7 @@ Deleted messages stay in the log, and stay searchable. Discord won't do that for
 
 ### 🔍 Searching the log
 
-`/logs search` filters stored messages by user, keyword, and whether they were deleted or edited. Fifty results at a time. Every mod team ends up needing this: someone says something awful, deletes it, and assumes it's gone. It isn't, and I've settled more arguments with this than with anything else in the bot. If you'd rather poke through it in a spreadsheet, the dashboard exports the same rows as CSV.
+`/logs search` searches stored messages — the deleted and edited ones, newest 1,000 per server. Every word you type has to match, in any order, so `ping everyone` finds a message containing both; wrap words in `"quotes"` to keep them together as an exact phrase. Narrow it with `user`, `channel`, and `action` (deleted or edited), and use `limit` to set how many matches to page through (default 50, max 200). Results arrive privately, five per page, with Previous/Next and Close buttons — only you can page them, and flipping pages never re-runs the search. Any one of those words might be the whole reason you built this: someone says something awful, deletes it, and assumes it's gone. It isn't, and I've settled more arguments with this than with anything else in the bot. If you'd rather poke through it in a spreadsheet, the dashboard exports the same rows as CSV.
 
 ### 🤖 Auto-mod
 
@@ -161,7 +166,9 @@ Then configure the type: where channels spawn (`type_category`), who sees it (`t
 
 Day to day: `/ticket claim`, `add`/`remove` people, `rename`, `close` with a reason. Plus `blacklist_add` for people who shouldn't be able to open tickets at all, `type_inactivity hours:24` to auto-close stale ones, `close_on_leave` for when someone leaves mid-conversation, and `log_channel` for where transcripts go.
 
-When a ticket closes, the entire transcript — every message, every author, every timestamp — gets snapshotted into the database. A closed ticket becomes a permanent record instead of a deleted channel. That's exactly what you want on the day someone says "I never said that."
+Waiting times are tracked too. The moment somebody other than the member who opened the ticket replies — a human, not a bot — that ticket's *first response* is stamped, once, and nothing later rewrites it. The thresholds are per server and live with the rest of the ticket settings in the dashboard: a first-response target, how long to wait before alerting staff, and which channel the alert goes to (the ticket log channel by default). Staff get one embed per ticket when it passes the alert threshold, never the same one twice — the state is in the database, so a restart doesn't re-alert anything, and a boot sweep still finds whatever came due while the bot was offline. The wait and whether it's overdue show up in the claim and close log embeds and as a badge on each ticket in the dashboard's Tickets screen, next to the average and median response times and the age of the open queue.
+
+When a ticket closes, the entire transcript — every message, every author, every timestamp — gets snapshotted into the database, paged back to the channel's first message rather than the last hundred. A closed ticket becomes a permanent record instead of a deleted channel. That's exactly what you want on the day someone says "I never said that." (The snapshot stops at 10,000 messages; a transcript that hits that ceiling says so at the top instead of quietly dropping the rest.)
 
 The dashboard side is where I actually build these. Modals, clone a type, edit questions inline, drag them into order, live preview of what a member sees, and an unsaved-changes bar so you don't lose twenty minutes of typing.
 
@@ -169,7 +176,7 @@ The dashboard side is where I actually build these. Modals, clone a type, edit q
 
 `/report target:@user reason:…` with an optional message ID to attach. Reports show up in a dashboard queue with counts, and keep the reporter, the target, and whatever you decided.
 
-Fair warning: right now `/report` is gated like a staff command, so ordinary members get refused. It's in [the broken list](#things-that-are-still-broken). Until it's fixed, grant it per-person with `/perm` if you want members using it.
+`/report` is a public command: any member can file one, while reviewing, approving and dismissing stays in the staff dashboard. The handler refuses self-reports and bots, and the usual per-user cooldown applies, so the queue cannot be flooded by one person.
 
 ### ⚖️ Ban appeals
 
@@ -350,7 +357,7 @@ curl -H "Authorization: Bearer nlux_…" https://your-dashboard.example/api/v1/s
 
 Scopes: `read:servers`, `read:stats`, `read:logs`, `admin:all`. There's also `write:webhooks`, which is stored but reserved — nothing serves it yet, and a token that only holds it gets told exactly that instead of a confusing 403 on every route. Tokens sit behind the same `api` rate-limit bucket as the dashboard, and the response shapes are a contract: additive changes only.
 
-Two more endpoints, both unauthenticated by design. `GET /health` says whether the bot is up (the Docker image uses it as a healthcheck), and `GET /metrics` returns Prometheus text — memory, CPU, uptime, guild and user counts, command totals. They're for scrapers. They don't leak secrets, but they do confirm the bot is running, so don't put this somewhere you'd hate a port scanner to find.
+Two more endpoints, both unauthenticated by design. `GET /health` runs a real database query and reports the Discord client's readiness — `ok`, `degraded` while the gateway reconnects (still a 200: a blip shouldn't get the container restarted), or `error` with a 503 when the database cannot answer. The Docker image uses it as a healthcheck. `GET /metrics` returns Prometheus text — memory, CPU, uptime, guild and user counts, command totals. They're for scrapers. They don't leak secrets, but they do confirm the bot is running, so don't put this somewhere you'd hate a port scanner to find.
 
 ---
 
@@ -477,6 +484,7 @@ src/
 ├── tempBans.js           The temp-ban sweeper
 ├── tempRoles.js          Temp roles: grant, revoke, sweep, re-apply on rejoin
 ├── tickets.js            Ticket lifecycle and transcripts
+├── ticketSla.js          First-response times, the SLA sweeper and its stats
 ├── banAppeals.js         Appeals and their reviews
 ├── reports.js            Reports and their reviews
 ├── reactionRoles.js      Emoji reaction roles
@@ -577,7 +585,7 @@ web/
 
 **There's a circuit breaker around Discord calls**, so one rate limit can't turn into a crash loop.
 
-**Shutdown is graceful.** Loops stop, the database closes, the process exits clean. That matters more than it sounds.
+**Shutdown is graceful.** Loops stop, new connections are refused, in-flight dashboard requests get up to ten seconds to finish, the gateway is destroyed, the database closes, and the process exits clean. `/shutdown` takes the same path as SIGTERM, and a second signal joins the first instead of closing the database twice. That matters more than it sounds.
 
 **Sessions and rate limits live in SQLite**, not in a process variable. A restart doesn't sign everyone out, and someone who just got rate-limited can't win a fresh budget by catching a deploy. The catch is that replicas now need to share a filesystem — or you put the database somewhere shared. For one process, which is what this is, it's strictly better.
 
@@ -729,7 +737,6 @@ On a VPS you already own, it's $0 — it fits next to whatever else is running t
 Every project has a list like this. Most just don't show you theirs.
 
 - **Ban appeals are staff-only, and approving one doesn't ban anyone.** There's no public appeal page — appeals get created through the authenticated dashboard route — and hitting approve records a decision and a reviewer without lifting the ban. The dashboard has a manual "submit appeal" form for when someone reaches you by DM. An actual self-serve appeal flow is a feature I haven't built, not a setting you're missing.
-- **`/report` is gated like a staff command.** It's not in the public command list, so members get refused, even though the reports screen is built for member reports. Grant it per person with `/perm` for now.
 - **`/help` is behind.** It covers 17 areas and doesn't include Tickets, Server Stats, Voice Presence, Temp Voice, Scheduled Posts, Raid Mode, Warning Thresholds or Reports. Worse, `/help category:…` validates against that same stale list, so those areas aren't reachable from it at all. The dashboard's Commands screen is complete.
 - **`/status` still says "35+ total" commands.** There are 76. Cosmetic, wrong, on my list.
 - **`discloud.config` still calls this `LogBot`.** It didn't get renamed when everything else did.

@@ -59,7 +59,7 @@ function logInternal(level, err, tag, extra, meta) {
     }
 
     // Stack trace handling
-    if (stack) {
+    if (level !== 'info' && stack) {
         logEntry.stack = stack.split('\n').slice(0, 15).join('\n');
         if (LOG_LEVELS[level] >= MIN_CONSOLE_LEVEL) {
             const lines = stack.split('\n').slice(0, 3).join('\n');

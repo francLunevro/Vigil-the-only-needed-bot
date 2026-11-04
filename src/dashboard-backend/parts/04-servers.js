@@ -5,19 +5,19 @@
 
 const { getGuildConfig, updateGuildConfig, getWelcomeConfig, getGoodbyeConfig, updateWelcomeConfig, intToHexString } = require('../../config');
 const { getGuildStats } = require('../../stats');
-const { getWarnings } = require('../../warnings');
-const { getNotesForUser } = require('../../staffNotes');
-const { getCases } = require('../../modCases');
+const { getMemberFile } = require('../../memberFile');
 const { getInviterStats } = require('../../invites');
 const { getAllPermissions } = require('../../permissions');
 const { getReactionRoles } = require('../../reactionRoles');
+const { getModDmConfig, setModDmConfig } = require('../../modDm');
 const { LOG_CATEGORIES } = require('../../constants');
 const { logError } = require('../../logError');
 const { sanitizeForDB, sanitizeName } = require('../../helpers');
 const { getClient } = require('../core');
+const { recordAuditTrail } = require('../../db');
 
 function register(app, ctx) {
-    const { requireAuth, checkOwner, filterByScope } = ctx;
+    const { requireAuth, checkOwner, filterByScope, getSessionUser } = ctx;
 
     // ── Servers List ──
     app.get('/api/servers', requireAuth, (req, res) => {
@@ -40,7 +40,7 @@ function register(app, ctx) {
         if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can change server settings' });
         const guild = client ? client.guilds.cache.get(req.params.id) : null;
         if (!guild) return res.status(404).json({ error: 'Server not found' });
-        const { prefix, embedColor } = req.body || {};
+        const { prefix, embedColor, modDm } = req.body || {};
         if (prefix !== undefined) {
             const p = String(prefix).trim();
             if (p && (p.length > 5 || /\s/.test(p))) return res.status(400).json({ error: 'Prefix must be 1-5 characters with no spaces' });
@@ -50,6 +50,24 @@ function register(app, ctx) {
             const c = String(embedColor).trim();
             if (c && !/^#[0-9a-fA-F]{6}$/.test(c)) return res.status(400).json({ error: 'Embed color must be a hex value like #5865F2' });
             updateGuildConfig(guild.id, cfg => { cfg.embedColor = c || null; return cfg; });
+        }
+        // Moderation DM receipts (src/modDm.js): switch the receipts off, or
+        // set the appeal instructions they carry. Both are optional fields.
+        if (modDm !== undefined) {
+            if (typeof modDm !== 'object' || modDm === null) return res.status(400).json({ error: 'modDm must be an object' });
+            const updates = {};
+            if (modDm.enabled !== undefined) {
+                if (typeof modDm.enabled !== 'boolean') return res.status(400).json({ error: 'modDm.enabled must be a boolean' });
+                updates.enabled = modDm.enabled;
+            }
+            if (modDm.appealInfo !== undefined) {
+                if (modDm.appealInfo !== null && typeof modDm.appealInfo !== 'string') {
+                    return res.status(400).json({ error: 'modDm.appealInfo must be a string or null' });
+                }
+                // Truncation happens in modDm; the route only rejects bad types.
+                updates.appealInfo = modDm.appealInfo;
+            }
+            setModDmConfig(guild.id, updates);
         }
         res.json({ success: true });
     });
@@ -151,6 +169,7 @@ function register(app, ctx) {
             }
             return cfg;
         });
+        recordAuditTrail({ type: 'config', userId: getSessionUser(req), guildId: guild.id, action: 'log.config', details: { category: category || null, enabled, trackedChannels: trackedChannels || null } });
         res.json({ success: true });
     });
 
@@ -171,6 +190,8 @@ function register(app, ctx) {
                 }
                 return cfg;
             });
+            const savedCategories = categories.map(c => c && c.category).filter(Boolean);
+            if (savedCategories.length) recordAuditTrail({ type: 'config', userId: getSessionUser(req), guildId: guild.id, action: 'log.config.batch', details: { categories: savedCategories } });
         }
         res.json({ success: true });
     });
@@ -184,6 +205,7 @@ function register(app, ctx) {
         const { prefix } = req.body;
         if (!prefix || prefix.length > 5) return res.status(400).json({ error: 'Prefix must be 1-5 characters' });
         updateGuildConfig(guild.id, (cfg) => { cfg.prefix = prefix; return cfg; });
+        recordAuditTrail({ type: 'config', userId: getSessionUser(req), guildId: guild.id, action: 'prefix.update', details: { prefix } });
         res.json({ success: true, prefix });
     });
 
@@ -376,6 +398,7 @@ function register(app, ctx) {
             permissions: getAllPermissions(guild.id),
             ownerId: guild.ownerId,
             raidMode: require('../../raidMode').getRaidConfig(guild.id),
+            modDm: getModDmConfig(guild.id),
         });
     });
 
@@ -423,23 +446,22 @@ function register(app, ctx) {
                 joinedAt: m.joinedTimestamp || null,
                 roles: m.roles ? m.roles.cache.filter(r => r.id !== guild.id).map(r => ({ id: r.id, name: r.name, color: r.hexColor })).slice(0, 12) : [],
             } : null;
-            const warnings = getWarnings(guild.id, userId);
-            const notes = getNotesForUser(guild.id, userId).map(n => ({
-                id: n.id,
-                note: n.note,
-                authorTag: n.author_tag,
-                createdAt: n.created_at,
-            }));
-            const cases = getCases(guild.id, userId, 30).map(c => ({
-                caseNumber: c.case_number,
-                actionType: c.action_type,
-                reason: c.reason,
-                moderatorTag: c.moderator_tag,
-                active: !!c.active,
-                createdAt: c.created_at,
-            }));
-            const invites = getInviterStats(guild.id, userId);
-            res.json({ member, warnings, notes, cases, invites });
+            // The member file reads every system once (src/memberFile.js) and
+            // the three legacy fields below are the very lists it composed, so
+            // this route cannot drift from the /memberfile view. The case limit
+            // is the 30 this route has always sent, which keeps `cases`
+            // byte-identical while `memberFile` adds the merged timeline and the
+            // per-system summaries on top.
+            const memberFile = getMemberFile(guild.id, userId, { limit: 30 });
+            const invitations = getInviterStats(guild.id, userId);
+            res.json({
+                member,
+                warnings: memberFile.sections.warnings,
+                notes: memberFile.sections.notes,
+                cases: memberFile.sections.cases,
+                invites: invitations,
+                memberFile,
+            });
         } catch (err) {
             res.status(500).json({ error: err.message });
         }

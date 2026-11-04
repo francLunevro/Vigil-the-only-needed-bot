@@ -14,7 +14,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'command-pipeline-test-'));
 process.env.DATA_DIR = tmp;
 process.env.OWNER_ID = 'owner-1';
 
-const { runCommand, checkCooldown, getFriendlyError } = require('../src/commandPipeline');
+const { runCommand, cooldownRemaining, beginAttempt, releaseAttempt, chargeCooldown, getFriendlyError } = require('../src/commandPipeline');
 const { grantPermission, revokePermission } = require('../src/permissions');
 const { getDb, closeDb } = require('../src/db');
 
@@ -133,21 +133,113 @@ test('cooldown blocks the second run inside the window', async () => {
     assert.match(second.calls.replies[0].content, /Please wait/i);
 });
 
-test('checkCooldown: zero-cooldown commands are always allowed', async () => {
+test('cooldownRemaining: zero-cooldown commands are always allowed', async () => {
     // 'shutdown' is overridden to 0 seconds — an override of 0 must mean
     // "no cooldown", not "fall back to the default".
-    assert.strictEqual(await checkCooldown('shutdown', 'u', 'g'), true);
-    assert.strictEqual(await checkCooldown('shutdown', 'u', 'g'), true);
+    assert.strictEqual(await cooldownRemaining('shutdown', 'u', 'g'), true);
+    await chargeCooldown('shutdown', 'u', 'g');
+    assert.strictEqual(await cooldownRemaining('shutdown', 'u', 'g'), true);
 });
 
-test('checkCooldown: the per-command override sets the window', async () => {
+test('the per-command override sets the window', async () => {
     const guild = uniqueGuild('g-cd2');
-    assert.strictEqual(await checkCooldown('purge', 'u1', guild), true);
-    const second = await checkCooldown('purge', 'u1', guild);
+    assert.strictEqual(await cooldownRemaining('purge', 'u1', guild), true);
+    await chargeCooldown('purge', 'u1', guild);
+    const second = await cooldownRemaining('purge', 'u1', guild);
     assert.notStrictEqual(second, true);
     const remaining = Number(second.remaining);
     assert.ok(remaining > 0, 'remaining seconds reported');
     assert.ok(remaining <= 5, `purge override is 5s, got ${remaining}`);
+});
+
+test('checking alone never starts a window', async () => {
+    // That is the whole point of splitting the two: a command that fails used
+    // to spend a window it never used.
+    const guild = uniqueGuild('g-cd3');
+    assert.strictEqual(await cooldownRemaining('purge', 'u2', guild), true);
+    assert.strictEqual(await cooldownRemaining('purge', 'u2', guild), true);
+    assert.strictEqual(await cooldownRemaining('purge', 'u2', guild), true);
+});
+
+test('a handler that throws does not burn the cooldown', async () => {
+    const guild = uniqueGuild('g-cd-throw');
+    const failing = makeInteraction('ping', { guildId: guild });
+    await runCommand(failing, async () => { throw new Error('Discord blip'); });
+    assert.strictEqual(failing.calls.replies.length, 1, 'the failure is reported');
+    assert.strictEqual(failing.calls.replies[0].ephemeral, true);
+
+    // The retry runs straight away — no "please wait" for a failure the user
+    // did not cause.
+    const retry = makeInteraction('ping', { guildId: guild });
+    let ran = 0;
+    await runCommand(retry, async () => { ran++; });
+    assert.strictEqual(ran, 1, 'a failed command must not cost the user the window');
+    assert.strictEqual(retry.calls.replies.length, 0);
+});
+
+test('a second invocation cannot start while the first is still running', async () => {
+    // The check is side-effect free, so without the reservation two prefix
+    // messages sent back to back would both get through.
+    const guild = uniqueGuild('g-race');
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let ran = 0;
+
+    const first = runCommand(makeInteraction('ping', { guildId: guild }), async () => {
+        ran++;
+        await gate;
+    });
+
+    // Same user, same guild, same command — while the first handler is parked.
+    const second = makeInteraction('ping', { guildId: guild });
+    await runCommand(second, async () => { ran++; });
+
+    assert.strictEqual(ran, 1, 'the second invocation must not run');
+    assert.match(second.calls.replies[0].content, /Please wait/i);
+
+    release();
+    await first;
+    assert.strictEqual(ran, 1);
+});
+
+test('beginAttempt books the slot and releaseAttempt gives it back', async () => {
+    const guild = uniqueGuild('g-book');
+    assert.strictEqual(await beginAttempt('purge', 'u3', guild), null, 'first attempt is allowed');
+
+    const second = await beginAttempt('purge', 'u3', guild);
+    assert.notStrictEqual(second, null, 'the slot is held while the first runs');
+    assert.ok(Number(second.remaining) > 0, 'and it reports how long is left');
+
+    // A failed command returns the slot, so the retry is not blocked.
+    releaseAttempt('purge', 'u3', guild);
+    assert.strictEqual(await beginAttempt('purge', 'u3', guild), null);
+    releaseAttempt('purge', 'u3', guild);
+});
+
+test('charging a window frees the reservation it replaces', async () => {
+    const guild = uniqueGuild('g-book-charge');
+    assert.strictEqual(await beginAttempt('purge', 'u4', guild), null);
+    await chargeCooldown('purge', 'u4', guild);
+
+    // Still refused, but now by the window rather than by the held slot.
+    const blocked = await beginAttempt('purge', 'u4', guild);
+    assert.notStrictEqual(blocked, null);
+    assert.ok(Number(blocked.remaining) > 0);
+});
+
+test('a refused attempt still burns the cooldown', async () => {
+    // A refusal is not a failure: without the charge, someone with no grant
+    // could spam the refusal reply.
+    const guild = uniqueGuild('g-cd-refuse');
+    const denied = makeInteraction('ban', { userId: 'nobody', guildId: guild });
+    await runCommand(denied, async () => {});
+    assert.match(denied.calls.replies[0].content, /don't have permission/i);
+
+    const second = makeInteraction('ban', { userId: 'nobody', guildId: guild });
+    let ran = 0;
+    await runCommand(second, async () => { ran++; });
+    assert.strictEqual(ran, 0);
+    assert.match(second.calls.replies[0].content, /Please wait/i, 'the second refusal is rate-limited');
 });
 
 test('a throwing handler is converted into a friendly ephemeral reply', async () => {

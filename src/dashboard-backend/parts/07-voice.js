@@ -5,7 +5,8 @@ const { getPresence, joinChannel, moveChannel, leaveChannel, setStatusText, rest
 const {
     getConfig: getTempVoiceConfig, setConfig: setTempVoiceConfig,
     getTriggers, setTrigger, removeTrigger, getSpawned,
-    registerPanel, unregisterPanel, updatePanels, cleanupOrphans,
+    registerPanel, getPanels, removePanelsForChannel, updatePanels, cleanupOrphans,
+    buildPanelMessage,
     DEFAULT_TEMPLATE,
 } = require('../../tempVoice');
 const { logError } = require('../../logError');
@@ -122,12 +123,13 @@ function register(app, ctx) {
             const config = getTempVoiceConfig(guild.id);
             const triggers = getTriggers(guild.id);
             const spawned = getSpawned(guild.id);
+            const panels = getPanels(guild.id);
             const channels = guild.channels.cache
                 .filter(c => c.type === 2 || c.type === 4)
                 .sort((a, b) => a.position - b.position)
                 .map(c => ({ id: c.id, name: c.name, type: c.type }));
-            res.json({ config, triggers, spawned, channels });
-        } catch { res.json({ config: { name_template: DEFAULT_TEMPLATE }, triggers: [], spawned: [], channels: [] }); }
+            res.json({ config, triggers, spawned, panels, channels });
+        } catch { res.json({ config: { name_template: DEFAULT_TEMPLATE }, triggers: [], spawned: [], panels: [], channels: [] }); }
     });
 
     app.post('/api/server/:id/temp-voice/triggers', requireAuth, async (req, res) => {
@@ -190,8 +192,11 @@ function register(app, ctx) {
         try {
             const channel = guild.channels.cache.get(channelId);
             if (!channel || !channel.isTextBased()) return res.status(400).json({ error: 'Invalid text channel' });
-            const panel = registerPanel(guild.id, channelId);
-            res.json({ success: true, panel });
+            // Post a fresh control panel and remember it so `updatePanels` can
+            // keep it live as temp channels come and go.
+            const message = await channel.send(buildPanelMessage(guild));
+            registerPanel(guild.id, channelId, message.id);
+            res.json({ success: true, panel: { channelId, messageId: message.id } });
         } catch (err) {
             logError(err, 'dashboard', 'tempvoice_panel_register');
             res.status(500).json({ error: err.message });
@@ -206,7 +211,7 @@ function register(app, ctx) {
         const { channelId } = req.body;
         if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
         try {
-            unregisterPanel(guild.id, channelId);
+            removePanelsForChannel(guild.id, channelId);
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'tempvoice_panel_unregister');
@@ -234,7 +239,7 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            cleanupOrphans(guild);
+            await cleanupOrphans(client);
             res.json({ success: true });
         } catch (err) {
             logError(err, 'dashboard', 'tempvoice_cleanup');

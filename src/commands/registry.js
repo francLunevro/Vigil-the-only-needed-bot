@@ -68,8 +68,17 @@ const { executeAutoMod } = require('./automod');
 // ── Invites ──
 const { executeInvites } = require('./invites');
 
+// ── Custom Commands & Autoresponders ──
+const { executeCustomCommand, executeAutoresponder } = require('./customCommands');
+
+// ── Temporary Roles ──
+const { executeTempRole } = require('./tempRole');
+
 // ── Staff Notes ──
 const { executeNote } = require('./note');
+
+// ── Member File ──
+const { executeMemberFile } = require('./memberFile');
 
 // ── Log Search ──
 const { executeLogs } = require('./logs');
@@ -177,8 +186,18 @@ const commandRegistry = {
     // Invites
     invites: executeInvites,
 
+    // Custom Commands & Autoresponders
+    customcommand: executeCustomCommand,
+    autoresponder: executeAutoresponder,
+
+    // Temporary Roles
+    temprole: executeTempRole,
+
     // Staff Notes
     note: executeNote,
+
+    // Member File (warnings, cases, notes, reports, appeals, tickets in one view)
+    memberfile: executeMemberFile,
 
     // Log Search
     logs: executeLogs,
@@ -205,6 +224,10 @@ const publicCommands = [
     'worldcup', '8ball', 'coinflip', 'dice', 'rps',
     'joke', 'fact', 'advice', 'quote', 'reverse', 'mock', 'random',
     'remindme', 'reminders',
+    // /report is filed BY members about other members — the handler already
+    // rejects self-reports and bots, and reports land in a staff-reviewed
+    // queue, so gating it behind owner/perm made the feature unusable.
+    'report',
     // tempvc enforces owner/owner-of-channel permissions inside its handler
     'tempvc',
     // /prefix with no args only VIEWS the prefix; the change path is

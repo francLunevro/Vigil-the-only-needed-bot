@@ -3,7 +3,7 @@ import { installInputUpgrades, themeSweep } from './11-motion.mjs';
 import { applyCompactPref, loadSrvModTools } from './03-mod-tools.mjs';
 import { loadTickets } from './04-tickets.mjs';
 // ═══ COMMAND PALETTE (Ctrl+K) ═══
-const PAL_SECTIONS=[['overview','Overview'],['analytics','Analytics'],['servers','Servers'],['auditlog','Audit Log'],['moderation','Moderation'],['activity','Activity'],['insights','Insights'],['invites','Invites'],['giveaways','Giveaways'],['automod','Auto-Mod'],['tickets','Tickets'],['commands','Commands'],['reminders','Reminders'],['system','System'],['errors','Errors'],['settings','Customize']];
+const PAL_SECTIONS=[['overview','Overview'],['analytics','Analytics'],['servers','Servers'],['auditlog','Audit Log'],['moderation','Moderation'],['activity','Activity'],['insights','Insights'],['invites','Invites'],['giveaways','Giveaways'],['automod','Auto-Mod'],['tickets','Tickets'],['commands','Commands'],['custom-commands','Custom Commands'],['reminders','Reminders'],['system','System'],['errors','Errors'],['settings','Customize']];
 const PAL_ACTIONS=PAL_SECTIONS.map(s=>({label:'Go to '+s[1],hint:'Section',run:()=>showSec(s[0])}))
   .concat([
     {label:'Toggle Dark / Light Mode',hint:'Action',run:toggleTheme},

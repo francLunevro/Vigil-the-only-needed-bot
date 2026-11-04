@@ -1,3 +1,4 @@
+const { fetchAvatar } = require('../imageSafety');
 const { EmbedBuilder } = require('discord.js');
 const { getBotConfig, saveBotConfig, getGuildConfig, updateGuildConfig } = require('../config');
 const { makeEmbed } = require('../embeds');
@@ -207,7 +208,7 @@ async function executeBotAvatar(interaction) {
     await interaction.deferReply({ ephemeral: false });
 
     try {
-        await interaction.client.user.setAvatar(url);
+        await interaction.client.user.setAvatar(await fetchAvatar(url));
         const embed = makeEmbed({
             color: 'Green',
             title: '\uD83D\uDDBC\uFE0F Avatar Changed',
@@ -217,8 +218,8 @@ async function executeBotAvatar(interaction) {
             timestamp: true,
         });
         await interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-        await interaction.editReply({ content: '\u26A0\uFE0F Failed to change avatar: ' + err.message + '\nMake sure the URL is a direct image link (e.g. ending in .png/.jpg/.gif).' });
+    } catch {
+        await interaction.editReply({ content: 'Could not change avatar. Use a valid Discord CDN image link under 10 MB.' });
     }
 }
 

@@ -116,7 +116,16 @@ async function executeShutdown(interaction) {
         timestamp: true,
     });
     await interaction.reply({ embeds: [embed], ephemeral: true });
-    setTimeout(() => process.exit(0), 1500);
+    // Same graceful path as SIGTERM: stop the sweeps, let in-flight dashboard
+    // requests finish, destroy the gateway, then close SQLite. A bare
+    // process.exit() here skipped all of that.
+    setTimeout(() => {
+        const { requestShutdown } = require('../shutdown');
+        if (requestShutdown('shutdown command') === null) {
+            console.warn('[Bot] No graceful shutdown handler registered; exiting.');
+            process.exit(0);
+        }
+    }, 1500);
 }
 
 module.exports = { executeDashboard, executeDashAccess, executeServerLeave, executeShutdown };

@@ -11,8 +11,10 @@ const { addWarning } = require('../warnings');
 const { createCase } = require('../modCases');
 const { getDb } = require('../db');
 const { logError } = require('../logError');
-const { sanitizeForDM, validateModalInput } = require('../helpers');
+const { validateModalInput } = require('../helpers');
 const { sendLog, modActionLogEmbed, membershipField } = require('../logging');
+const { hierarchyBlock } = require('../modGuard');
+const { sendPunishmentDm } = require('../modDm');
 
 // ──────────────────── Cancel ────────────────────
 
@@ -40,6 +42,11 @@ async function handleConfirmKick(interaction, parts) {
     if (!member) {
         return interaction.update({ content: '❌ That user is no longer in the server.', components: [], embeds: [] });
     }
+    // Re-checked at execution: roles can change between the prompt and the click.
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.update({ content: '❌ ' + blocked, components: [], embeds: [] });
+    }
     if (!member.kickable) {
         return interaction.update({ content: '❌ I can no longer kick that user (role hierarchy changed).', components: [], embeds: [] });
     }
@@ -49,7 +56,7 @@ async function handleConfirmKick(interaction, parts) {
 
     try {
         await member.kick(reason);
-        createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'kick', reason);
+        const modCase = createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'kick', reason);
         // Wick-style log entry in the moderation log channel.
         await sendLog(modActionLogEmbed({
             verb: 'Kick', color: 0xE74C3C,
@@ -63,6 +70,12 @@ async function handleConfirmKick(interaction, parts) {
             .setTitle('👢 Member Kicked ✅')
             .setDescription('<@' + targetId + '> has been kicked.');
         await interaction.update({ embeds: [embed], components: [] });
+
+        // Receipt after the confirmation, so the moderator never waits on a DM.
+        await sendPunishmentDm({
+            guild, user: member.user, action: 'kick', reason,
+            caseNumber: modCase ? modCase.case_number : null,
+        });
     } catch (err) {
         logError(err, 'interactions', 'confirmKick');
         await interaction.update({ content: '❌ Failed to kick: ' + err.message, components: [], embeds: [] });
@@ -80,6 +93,12 @@ async function handleConfirmTempBan(interaction, parts) {
 
     if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
         return interaction.update({ content: '❌ I lost the **Ban Members** permission.', components: [], embeds: [] });
+    }
+
+    // Re-checked at execution: roles can change between the prompt and the click.
+    const blocked = hierarchyBlock(interaction, await guild.members.fetch(targetId).catch(() => null));
+    if (blocked) {
+        return interaction.update({ content: '❌ ' + blocked, components: [], embeds: [] });
     }
 
     const durationMs = {
@@ -106,7 +125,7 @@ async function handleConfirmTempBan(interaction, parts) {
         db.prepare('INSERT INTO temp_bans (user_id, guild_id, reason, banned_at, unban_at) VALUES (?, ?, ?, ?, ?)')
             .run(targetId, guild.id, reason, Date.now(), unbanAt);
 
-        createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'tempban', reason + ' (Duration: ' + durationLabel + ')');
+        const modCase = createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'tempban', reason + ' (Duration: ' + durationLabel + ')');
 
         // Wick-style log entry in the moderation log channel.
         const tbTarget = await interaction.client.users.fetch(targetId).catch(() => null);
@@ -126,6 +145,13 @@ async function handleConfirmTempBan(interaction, parts) {
             .setFooter({ text: 'Auto-unban at <t:' + Math.floor(unbanAt / 1000) + ':R>' });
 
         await interaction.update({ embeds: [embed], components: [] });
+
+        await sendPunishmentDm({
+            guild, user: tbTarget, userId: targetId, action: 'tempban', reason,
+            caseNumber: modCase ? modCase.case_number : null,
+            durationLabel,
+            expiresAt: unbanAt,
+        });
     } catch (err) {
         logError(err, 'interactions', 'confirmTempBan');
         await interaction.update({ content: '❌ Failed to temp ban: ' + err.message, components: [], embeds: [] });
@@ -145,6 +171,12 @@ async function handleConfirmBan(interaction, parts) {
         return interaction.update({ content: '❌ I lost the **Ban Members** permission.', components: [], embeds: [] });
     }
 
+    // Re-checked at execution: roles can change between the prompt and the click.
+    const blocked = hierarchyBlock(interaction, await guild.members.fetch(targetId).catch(() => null));
+    if (blocked) {
+        return interaction.update({ content: '❌ ' + blocked, components: [], embeds: [] });
+    }
+
     const reasonField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Reason');
     const reason = reasonField ? reasonField.value : 'No reason provided';
     const proofField = interaction.message.embeds[0]?.fields?.find(f => f.name === 'Proof');
@@ -152,7 +184,7 @@ async function handleConfirmBan(interaction, parts) {
 
     try {
         await guild.bans.create(targetId, { reason: reason, deleteMessageSeconds: deleteMessageSeconds });
-        createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'ban', reason);
+        const modCase = createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'ban', reason);
         // Wick-style log entry in the moderation log channel.
         const banTarget = await interaction.client.users.fetch(targetId).catch(() => null);
         await sendLog(modActionLogEmbed({
@@ -168,6 +200,11 @@ async function handleConfirmBan(interaction, parts) {
             .setTitle('🔨 Member Banned ✅')
             .setDescription('<@' + targetId + '> has been banned.');
         await interaction.update({ embeds: [embed], components: [] });
+
+        await sendPunishmentDm({
+            guild, user: banTarget, userId: targetId, action: 'ban', reason,
+            caseNumber: modCase ? modCase.case_number : null,
+        });
     } catch (err) {
         logError(err, 'interactions', 'confirmBan');
         await interaction.update({ content: '❌ Failed to ban: ' + err.message, components: [], embeds: [] });
@@ -259,7 +296,7 @@ async function handleWarnSubmit(interaction, parts) {
     const reason = validation.value;
 
     const warnings = addWarning(interaction.guild.id, targetId, interaction.user.tag, reason);
-    createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'warn', reason);
+    const modCase = createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'warn', reason);
 
     const embed = new EmbedBuilder()
         .setColor(0xF1C40F)
@@ -275,13 +312,12 @@ async function handleWarnSubmit(interaction, parts) {
 
     await interaction.reply({ embeds: [embed] });
 
-    // DM the user (sanitized for DM)
-    try {
-        const user = await interaction.client.users.fetch(targetId);
-        await user.send('⚠️ You have been warned in **' + interaction.guild.name + '**.\nReason: ' + sanitizeForDM(reason));
-    } catch {
-        // DMs closed, silently skip
-    }
+    // Receipt: sanitized, case-numbered, and a refusal is recorded rather than
+    // swallowed (the old version dropped a closed DM without a trace).
+    await sendPunishmentDm({
+        guild: interaction.guild, userId: targetId, action: 'warn', reason,
+        caseNumber: modCase ? modCase.case_number : null,
+    });
 
     // Check warning thresholds for auto-punish
     try {

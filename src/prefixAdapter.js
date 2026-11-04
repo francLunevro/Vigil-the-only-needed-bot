@@ -234,17 +234,31 @@ function parseEmbedArgs(args, message, messageName) {
     };
 }
 
+function appendQuery(existing, text) {
+    const part = (text === null || text === undefined ? '' : String(text)).trim();
+    if (!part) return existing;
+    return existing ? existing + ' ' + part : part;
+}
+
+// `;logs search @user [#channel] [action:deleted] [limit:20] dying light`
+// Bare words are the query, so a search doesn't need a flag — matching the
+// slash option where `query` is one field of words.
 function parseLogsSearchArgs(args, message) {
-    const values = { user: null, keyword: null, action: null, limit: null };
+    const values = { user: null, channel: null, query: null, action: null, limit: null };
+    const words = [];
     for (const a of args) {
-        if (!values.keyword && a.startsWith('keyword:')) values.keyword = a.slice(8);
-        else if (!values.action && a.startsWith('action:')) values.action = a.slice(7);
-        else if (!values.limit && a.startsWith('limit:')) values.limit = Number.parseInt(a.slice(6), 10) || null;
-        else if (!values.user) {
-            const id = extractId(a);
-            if (id) values.user = resolveUser(id, message);
+        if (a.startsWith('query:')) { values.query = appendQuery(values.query, a.slice(6)); continue; }
+        if (!values.action && a.startsWith('action:')) { values.action = a.slice(7); continue; }
+        if (!values.limit && a.startsWith('limit:')) { values.limit = Number.parseInt(a.slice(6), 10) || null; continue; }
+        if (!values.channel && (a.startsWith('channel:') || a.startsWith('in:'))) {
+            values.channel = parseChannelArg(a.slice(a.indexOf(':') + 1), message);
+            continue;
         }
+        const id = extractId(a);
+        if (!values.user && id) { values.user = resolveUser(id, message); continue; }
+        words.push(a);
     }
+    if (words.length > 0) values.query = appendQuery(values.query, words.join(' '));
     return { values };
 }
 
@@ -283,7 +297,7 @@ const USAGE_OVERRIDES = {
     poll: (prefix) => '`' + prefix + 'poll <question> | <option1> | <option2> [| option3] [| option4]`',
     embed: (prefix) => '`' + prefix + 'embed #channel <title> | <description> | #color`',
     announce: (prefix) => '`' + prefix + 'announce #channel <title> | <message> | #color`',
-    'logs:search': (prefix) => '`' + prefix + 'logs search [@user] [keyword:<text>] [action:deleted|edited] [limit:<num>]`',
+    'logs:search': (prefix) => '`' + prefix + 'logs search [@user] [#channel] [action:deleted|edited] [limit:<num>] <words or "exact phrase">`',
     'embedconfig:footer': (prefix) => '`' + prefix + 'embedconfig footer <text>`',
     'welcome:footer': (prefix) => '`' + prefix + 'welcome footer <text> [icon_url]`',
     'goodbye:footer': (prefix) => '`' + prefix + 'goodbye footer <text> [icon_url]`',

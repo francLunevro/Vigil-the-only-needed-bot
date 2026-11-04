@@ -375,6 +375,19 @@ test('registerPanel/getPanels/unregisterPanel roundtrip', () => {
     tv.unregisterPanel('msg2');
 });
 
+// The dashboard removes a panel by channel (it never learns the message id),
+// so the channel-keyed path must drop exactly that channel's row.
+test('removePanelsForChannel drops only the matching channel', () => {
+    tv.registerPanel('g1', 'text1', 'msg1');
+    tv.registerPanel('g1', 'text2', 'msg2');
+    tv.removePanelsForChannel('g1', 'text1');
+    const rows = tv.getPanels('g1');
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].channel_id, 'text2');
+    tv.removePanelsForChannel('g1', 'text2');
+    assert.strictEqual(tv.getPanels('g1').length, 0);
+});
+
 test('buildPanelMessage shows owner + lock status per live channel', () => {
     const spawned = makeVoiceChannel('sp1', 'Aya\'s channel');
     const { PermissionFlagsBits } = require('discord.js');
