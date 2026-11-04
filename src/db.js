@@ -740,6 +740,24 @@ function initSchema() {
             // channel lookup has to stay an index seek rather than a scan.
             db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_channel ON tickets(channel_id)');
         } },
+        { name: '0044_scheduled_action_recovery', run: () => {
+            for (const table of ['scheduled_posts', 'reminders', 'temp_bans']) {
+                addColumnIfMissing(table, 'delivery_state', "TEXT NOT NULL DEFAULT 'pending'");
+                addColumnIfMissing(table, 'dispatch_started_at', 'INTEGER');
+                addColumnIfMissing(table, 'retry_at', 'INTEGER NOT NULL DEFAULT 0');
+            }
+            for (const table of ['scheduled_posts', 'reminders']) {
+                addColumnIfMissing(table, 'last_message_id', 'TEXT');
+            }
+            addColumnIfMissing('temp_bans', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+            addColumnIfMissing('temp_bans', 'ban_marker', 'TEXT');
+            db.exec(`
+                UPDATE scheduled_posts SET delivery_state = 'failed'
+                WHERE delivery_state = 'pending' AND attempts >= 3;
+                UPDATE reminders SET delivery_state = CASE WHEN notified = 1 THEN 'delivered' ELSE 'failed' END
+                WHERE delivery_state = 'pending' AND (notified = 1 OR attempts >= 3);
+            `);
+        } },
     ];
 
     for (const migration of MIGRATIONS) {

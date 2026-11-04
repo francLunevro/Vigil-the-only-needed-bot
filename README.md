@@ -726,7 +726,11 @@ On a VPS you already own, it's $0 — it fits next to whatever else is running t
 
 **Can I use it in more than one server?** Yes. Commands are global, configs are per server, and the dashboard has a server switcher and a comparison view.
 
-**Does it survive restarts?** The data does — it's SQLite, and temp bans, temp roles, giveaways, reminders, polls and scheduled posts are all database-backed with sweepers that catch up on boot. So do logins now: sessions moved into the database, so a restart doesn't sign you out.
+**What happens to scheduled actions after a restart?** The scheduler records a dispatch in SQLite before sending a scheduled post, a reminder DM, or an automatic unban. On restart, the workers give unfinished dispatches five minutes from their original start before reconciling them. Confirmed rejections are retried with backoff, up to three attempts.
+
+- If delivery is uncertain, a reminder is left unsent or already delivered, depending on what Discord accepted. Vigil records the outcome as uncertain and does not resend it. A recurring post skips the uncertain occurrence and resumes at the next scheduled time.
+- The unban worker reads Discord's current ban. An absent ban completes the job. If an unban may already have been sent and a ban remains, or the ban identity differs, Vigil leaves it in place for staff to review. New temporary bans carry a unique marker in the Discord ban reason. Older temporary bans are matched by their original reason.
+- Check the affected channel, DM, or ban before repeating an uncertain action manually. Restoring an older database snapshot or downgrading to a version that ignores dispatch states can replay work. Keep workers stopped during recovery until outstanding actions have been reviewed.
 
 **How do I update?** `git pull`, `npm install`, `npm run build:web` (that build is what `/` serves now), restart, and `/deploy` if commands changed. Take a backup first; it's ten seconds. Migrations apply themselves on boot.
 

@@ -9,12 +9,12 @@ const {
 } = require('discord.js');
 const { addWarning } = require('../warnings');
 const { createCase } = require('../modCases');
-const { getDb } = require('../db');
 const { logError } = require('../logError');
 const { validateModalInput } = require('../helpers');
 const { sendLog, modActionLogEmbed, membershipField } = require('../logging');
 const { hierarchyBlock } = require('../modGuard');
 const { sendPunishmentDm } = require('../modDm');
+const { applyTempBan } = require('../tempBans');
 
 // ──────────────────── Cancel ────────────────────
 
@@ -117,13 +117,7 @@ async function handleConfirmTempBan(interaction, parts) {
     const proof = proofField ? proofField.value : null;
 
     try {
-        await guild.bans.create(targetId, { reason: '[Temp Ban ' + durationLabel + '] ' + reason, deleteMessageSeconds: deleteSeconds });
-
-        // Store the temp ban in the DB with auto-unban timestamp
-        const db = getDb();
-        const unbanAt = Date.now() + durationMs;
-        db.prepare('INSERT INTO temp_bans (user_id, guild_id, reason, banned_at, unban_at) VALUES (?, ?, ?, ?, ?)')
-            .run(targetId, guild.id, reason, Date.now(), unbanAt);
+        const unbanAt = await applyTempBan(guild, targetId, reason, durationLabel, durationMs, deleteSeconds);
 
         const modCase = createCase(interaction.guild.id, targetId, interaction.user.id, interaction.user.tag, 'tempban', reason + ' (Duration: ' + durationLabel + ')');
 

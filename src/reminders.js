@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { getDb } = require('./db');
+const { MAX_ATTEMPTS, STALE_DISPATCH_MS, deliveryNonce, wasRejected, retryAt } = require('./scheduledExecution');
 const { logError } = require('./logError');
 
 let client = null;
@@ -49,6 +50,7 @@ function getUserReminders(userId) {
         createdAt: r.created_at,
         remindAt: r.remind_at,
         notified: !!r.notified,
+        deliveryState: r.delivery_state,
     }));
 }
 
@@ -63,6 +65,7 @@ function getAllPending() {
         createdAt: r.created_at,
         remindAt: r.remind_at,
         notified: !!r.notified,
+        deliveryState: r.delivery_state,
     }));
 }
 
@@ -70,54 +73,88 @@ function getAllPending() {
 
 let checkRunning = false;
 
-function startReminderChecker() {
-    if (checkInterval) clearInterval(checkInterval);
-
-    checkInterval = setInterval(async () => {
-        if (checkRunning) return;
-        checkRunning = true;
+async function processDueReminders() {
+    if (checkRunning || !client) return;
+    checkRunning = true;
+    try {
         const db = getDb();
         const now = Date.now();
+        db.prepare(`
+            UPDATE reminders SET delivery_state = 'uncertain', dispatch_started_at = NULL
+            WHERE notified = 0 AND delivery_state = 'dispatching' AND dispatch_started_at <= ?
+        `).run(now - STALE_DISPATCH_MS);
 
-        try {
-            // Find all due reminders that still have retry budget left
-            const due = db.prepare('SELECT * FROM reminders WHERE notified = 0 AND remind_at <= ? AND attempts < 3').all(now);
+        const due = db.prepare(`
+            SELECT * FROM reminders WHERE notified = 0 AND remind_at <= ?
+                AND delivery_state IN ('pending', 'retry') AND attempts < ? AND retry_at <= ?
+        `).all(now, MAX_ATTEMPTS, now);
+        const claim = db.prepare(`
+            UPDATE reminders SET delivery_state = 'dispatching', dispatch_started_at = ?, attempts = attempts + 1
+            WHERE id = ? AND user_id = ? AND notified = 0 AND delivery_state = ? AND attempts = ? AND retry_at <= ?
+        `);
+        const finish = db.prepare(`
+            UPDATE reminders SET delivery_state = ?, dispatch_started_at = NULL, retry_at = ?,
+                notified = ?, last_message_id = ?
+            WHERE id = ? AND user_id = ? AND delivery_state = 'dispatching' AND dispatch_started_at = ?
+        `);
 
-            if (due.length === 0) return;
-
-            const markNotified = db.prepare('UPDATE reminders SET notified = 1 WHERE id = ?');
-            const bumpAttempts = db.prepare('UPDATE reminders SET attempts = attempts + 1 WHERE id = ?');
-
-            for (const reminder of due) {
-                try {
-                    const user = await client.users.fetch(reminder.user_id).catch(() => null);
-                    if (!user) throw new Error('User unavailable');
-                    const embed = new EmbedBuilder()
-                        .setColor(0x5865F2)
-                        .setTitle('⏰ Reminder')
-                        .setDescription(reminder.text)
-                        .setFooter({ text: 'Set ' + new Date(reminder.created_at).toLocaleString() })
-                        .setTimestamp();
-                    await user.send({ embeds: [embed] });
-                    markNotified.run(reminder.id);
-                } catch {
-                    // Delivery failed (DMs closed, fetch error) — retry next tick,
-                    // up to 3 attempts, then prune below. Never mark before send.
-                    bumpAttempts.run(reminder.id);
-                }
+        for (const reminder of due) {
+            let user;
+            let embed;
+            try {
+                user = await client.users.fetch(reminder.user_id);
+                if (!user) throw new Error('Reminder recipient unavailable');
+                embed = new EmbedBuilder()
+                    .setColor(0x5865F2)
+                    .setTitle('? Reminder')
+                    .setDescription(reminder.text)
+                    .setFooter({ text: 'Set ' + new Date(reminder.created_at).toLocaleString() })
+                    .setTimestamp();
+            } catch (err) {
+                const attempts = reminder.attempts + 1;
+                db.prepare(`
+                    UPDATE reminders SET attempts = ?, retry_at = ?, delivery_state = ?
+                    WHERE id = ? AND user_id = ? AND delivery_state = ? AND attempts = ?
+                `).run(attempts, retryAt(attempts), attempts < MAX_ATTEMPTS ? 'retry' : 'failed',
+                    reminder.id, reminder.user_id, reminder.delivery_state, reminder.attempts);
+                logError(err, 'reminders', 'recipient');
+                continue;
             }
-
-            // Prune delivered reminders and exhausted ones older than 24 hours
-            const oneDayAgo = Date.now() - 86400000;
-            db.prepare('DELETE FROM reminders WHERE (notified = 1 OR attempts >= 3) AND remind_at < ?').run(oneDayAgo);
-
-        } catch (err) {
-            logError(err, 'reminders', 'check');
-        } finally {
-            checkRunning = false;
+            const started = Date.now();
+            if (!claim.run(started, reminder.id, reminder.user_id, reminder.delivery_state,
+                reminder.attempts, started).changes) continue;
+            let message;
+            try {
+                message = await user.send({
+                    embeds: [embed],
+                    nonce: deliveryNonce('reminder', reminder.id, reminder.remind_at),
+                    enforceNonce: true,
+                });
+            } catch (err) {
+                const attempts = reminder.attempts + 1;
+                const state = wasRejected(err) ? (attempts < MAX_ATTEMPTS ? 'retry' : 'failed') : 'uncertain';
+                finish.run(state, state === 'retry' ? retryAt(attempts) : 0, 0, null, reminder.id, reminder.user_id, started);
+                logError(err, 'reminders', 'delivery');
+                continue;
+            }
+            finish.run('delivered', 0, 1, message?.id ?? null, reminder.id, reminder.user_id, started);
         }
-    }, 15000);
 
+        db.prepare(`
+            DELETE FROM reminders WHERE remind_at < ? AND
+                (notified = 1 OR delivery_state IN ('failed', 'uncertain') OR
+                 (delivery_state = 'pending' AND attempts >= ?))
+        `).run(now - 86400000, MAX_ATTEMPTS);
+    } catch (err) {
+        logError(err, 'reminders', 'check');
+    } finally {
+        checkRunning = false;
+    }
+}
+
+function startReminderChecker() {
+    if (checkInterval) clearInterval(checkInterval);
+    checkInterval = setInterval(processDueReminders, 15000);
     return checkInterval;
 }
 
@@ -134,6 +171,7 @@ module.exports = {
     removeReminder,
     getUserReminders,
     getAllPending,
+    processDueReminders,
     startReminderChecker,
     stopReminderChecker,
 };

@@ -238,10 +238,11 @@ test('ctb_ parses duration + delete seconds and stores the auto-unban row', asyn
     });
     await handleInteraction(i);
     assert.strictEqual(guild.__bans[0].id, '222');
-    assert.match(guild.__bans[0].opts.reason, /^\[Temp Ban 7 days\] test$/);
     assert.strictEqual(guild.__bans[0].opts.deleteMessageSeconds, 3600);
     const row = getDb().prepare("SELECT * FROM temp_bans WHERE user_id = '222' AND guild_id = 'gTb1'").get();
     assert.ok(row, 'temp ban row stored');
+    assert.match(row.ban_marker, /^[0-9a-f-]{36}$/);
+    assert.strictEqual(guild.__bans[0].opts.reason, '[Vigil temp ban ' + row.ban_marker + '] 7 days: test');
     assert.ok(row.unban_at > Date.now() + 6 * 86400000, 'unban ~7 days out');
     assert.match(i.__calls.update[0].embeds[0].data.title, /Temp Banned/);
 });

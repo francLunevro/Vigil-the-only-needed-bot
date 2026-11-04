@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { getDb } = require('./db');
+const { MAX_ATTEMPTS, STALE_DISPATCH_MS, deliveryNonce, wasRejected, retryAt } = require('./scheduledExecution');
 const { logError } = require('./logError');
 
 let client = null;
@@ -117,6 +118,8 @@ function listScheduledPosts(guildId) {
         scheduleValue: r.schedule_value,
         nextRunAt: r.next_run_at,
         enabled: !!r.enabled,
+        deliveryState: r.delivery_state,
+        lastMessageId: r.last_message_id,
         createdBy: r.created_by,
         createdAt: r.created_at,
     }));
@@ -133,36 +136,78 @@ function removeScheduledPost(id, guildId) {
 let posterRunning = false;
 
 async function processDuePosts() {
-    if (posterRunning) return;
+    if (posterRunning || !client) return;
     posterRunning = true;
-    const db = getDb();
-    const now = Date.now();
     try {
-        const due = db.prepare('SELECT * FROM scheduled_posts WHERE enabled = 1 AND next_run_at <= ? AND attempts < 3').all(now);
+        const db = getDb();
+        const now = Date.now();
+        const due = db.prepare(`
+            SELECT * FROM scheduled_posts WHERE enabled = 1 AND next_run_at <= ? AND
+            ((delivery_state = 'dispatching' AND dispatch_started_at <= ?) OR
+             (delivery_state IN ('pending', 'retry', 'delivered', 'uncertain') AND attempts < ? AND retry_at <= ?))
+        `).all(now, now - STALE_DISPATCH_MS, MAX_ATTEMPTS, now);
+        const claim = db.prepare(`
+            UPDATE scheduled_posts SET delivery_state = 'dispatching', dispatch_started_at = ?, attempts = attempts + 1
+            WHERE id = ? AND guild_id = ? AND next_run_at = ? AND enabled = 1
+              AND delivery_state = ? AND attempts = ? AND retry_at <= ?
+        `);
+        const finish = db.prepare(`
+            UPDATE scheduled_posts SET next_run_at = ?, enabled = ?, attempts = 0, retry_at = 0,
+                delivery_state = ?, dispatch_started_at = NULL, last_message_id = ?
+            WHERE id = ? AND guild_id = ? AND next_run_at = ?
+                AND delivery_state = 'dispatching' AND dispatch_started_at = ?
+        `);
+        function complete(post, started, outcome, messageId = null) {
+            const next = computeNextRun(post.schedule_type, post.schedule_value, Date.now());
+            finish.run(next ?? post.next_run_at, next === null ? 0 : 1, outcome, messageId,
+                post.id, post.guild_id, post.next_run_at, started);
+        }
+
         for (const post of due) {
+            if (post.delivery_state === 'dispatching') {
+                complete(post, post.dispatch_started_at, 'uncertain');
+                continue;
+            }
+            const guild = client.guilds.cache.get(post.guild_id);
+            if (guild?.available === false) continue;
+            const started = Date.now();
+            if (!claim.run(started, post.id, post.guild_id, post.next_run_at,
+                post.delivery_state, post.attempts, started).changes) continue;
+            const channel = guild?.channels.cache.get(post.channel_id);
+            if (!channel?.isTextBased?.()) {
+                db.prepare(`
+                    UPDATE scheduled_posts SET enabled = 0, delivery_state = 'failed', dispatch_started_at = NULL
+                    WHERE id = ? AND guild_id = ? AND next_run_at = ? AND dispatch_started_at = ?
+                `).run(post.id, post.guild_id, post.next_run_at, started);
+                continue;
+            }
+            let message;
             try {
-                const guild = client?.guilds.cache.get(post.guild_id);
-                const channel = guild?.channels.cache.get(post.channel_id);
-                if (!channel || !channel.isTextBased || !channel.isTextBased()) {
-                    // Channel is gone — disable rather than retrying forever.
-                    db.prepare('UPDATE scheduled_posts SET enabled = 0 WHERE id = ?').run(post.id);
-                    continue;
-                }
                 const embed = new EmbedBuilder()
                     .setColor(post.color && /^#?[0-9a-fA-F]{6}$/.test(post.color) ? post.color : 0x5865F2)
                     .setDescription(post.content || null);
                 if (post.title) embed.setTitle(post.title);
-                await channel.send({ embeds: [embed] });
-                const next = computeNextRun(post.schedule_type, post.schedule_value, Date.now());
-                if (next === null) {
-                    db.prepare('UPDATE scheduled_posts SET enabled = 0 WHERE id = ?').run(post.id);
+                message = await channel.send({
+                    embeds: [embed],
+                    nonce: deliveryNonce('post', post.id, post.next_run_at),
+                    enforceNonce: true,
+                });
+            } catch (err) {
+                if (wasRejected(err)) {
+                    const attempts = post.attempts + 1;
+                    db.prepare(`
+                        UPDATE scheduled_posts SET delivery_state = ?, dispatch_started_at = NULL, retry_at = ?
+                        WHERE id = ? AND guild_id = ? AND next_run_at = ? AND dispatch_started_at = ?
+                    `).run(attempts < MAX_ATTEMPTS ? 'retry' : 'failed', retryAt(attempts),
+                        post.id, post.guild_id, post.next_run_at, started);
                 } else {
-                    db.prepare('UPDATE scheduled_posts SET next_run_at = ?, attempts = 0 WHERE id = ?').run(next, post.id);
+                    complete(post, started, 'uncertain');
                 }
-            } catch {
-                // Send failed (missing perms, etc.) — retry next tick up to 3 times.
-                db.prepare('UPDATE scheduled_posts SET attempts = attempts + 1 WHERE id = ?').run(post.id);
+                logError(err, 'scheduledPosts', 'delivery');
+                continue;
             }
+            // Keep persistence errors out of the send-error retry path.
+            complete(post, started, 'delivered', message?.id ?? null);
         }
     } catch (err) {
         logError(err, 'scheduledPosts', 'poster');
