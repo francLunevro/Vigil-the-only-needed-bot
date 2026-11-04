@@ -27,6 +27,7 @@ function createShutdown({
             const finish = () => {
                 if (settled) return;
                 settled = true;
+                clearTimeout(timer);
                 resolve();
             };
             const timer = setTimeout(() => {
@@ -35,7 +36,6 @@ function createShutdown({
                 try { server.closeAllConnections?.(); } catch { /* best effort */ }
                 finish();
             }, timeoutMs);
-            if (typeof timer.unref === 'function') timer.unref();
             try {
                 server.close(finish);
                 // Idle keep-alive sockets have no work in flight; without this
