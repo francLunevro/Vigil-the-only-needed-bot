@@ -106,7 +106,7 @@ function makeInteraction({ type = 'button', customId, userId = '111', user, mess
         isButton: () => type === 'button',
         isModalSubmit: () => type === 'modal',
         isStringSelectMenu: () => type === 'select',
-        isUserSelect: () => type === 'userSelect',
+        isUserSelectMenu: () => type === 'userSelect',
         reply: async (o) => { calls.reply.push(o); },
         update: async (o) => { calls.update.push(o); },
         deferUpdate: async () => { calls.deferUpdate++; },
@@ -238,10 +238,11 @@ test('ctb_ parses duration + delete seconds and stores the auto-unban row', asyn
     });
     await handleInteraction(i);
     assert.strictEqual(guild.__bans[0].id, '222');
-    assert.match(guild.__bans[0].opts.reason, /^\[Temp Ban 7 days\] test$/);
     assert.strictEqual(guild.__bans[0].opts.deleteMessageSeconds, 3600);
     const row = getDb().prepare("SELECT * FROM temp_bans WHERE user_id = '222' AND guild_id = 'gTb1'").get();
     assert.ok(row, 'temp ban row stored');
+    assert.match(row.ban_marker, /^[0-9a-f-]{36}$/);
+    assert.strictEqual(guild.__bans[0].opts.reason, '[Vigil temp ban ' + row.ban_marker + '] 7 days: test');
     assert.ok(row.unban_at > Date.now() + 6 * 86400000, 'unban ~7 days out');
     assert.match(i.__calls.update[0].embeds[0].data.title, /Temp Banned/);
 });
@@ -774,7 +775,7 @@ test('tvc_claim refuses while the owner is still in the channel', async () => {
         channelCache: new Map([['vc7', { id: 'vc7', members: new Set(['999']) }]]),
     });
     const member = makeMember('111', { voice: { channelId: 'vc7' } });
-    const ownerRow = { owner_id: '999', trigger_id: 'trig7' };
+    const ownerRow = { owner_id: '999', trigger_id: 'trig7', guild_id: guild.id };
     const restore = patch(tv, {
         getMemberChannelFor: () => ({ row: ownerRow, channel: { id: 'vc7' } }),
         getSpawnedChannel: (_id) => ownerRow,
@@ -794,7 +795,7 @@ test('tvc_claim transfers ownership when the owner left', async () => {
     });
     const member = makeMember('111', { voice: { channelId: 'vc8' } });
     const added = [];
-    const ownerRow = { owner_id: '999', trigger_id: 'trig8' };
+    const ownerRow = { owner_id: '999', trigger_id: 'trig8', guild_id: guild.id };
     const restore = patch(tv, {
         getMemberChannelFor: () => ({ row: ownerRow, channel: { id: 'vc8' } }),
         getSpawnedChannel: (_id) => ownerRow,
@@ -900,7 +901,7 @@ test('tvc_modal_limit accepts 0-99 and rejects out-of-range', async () => {
 // ──────────────────── Select menu fallbacks ────────────────────
 
 test('rm_ select with no configured menu gets the gone reply', async () => {
-    const i = makeInteraction({ type: 'select', customId: 'rm_123456', values: ['r1'] });
+    const i = makeInteraction({ type: 'select', customId: 'rm_123456', values: ['r1'], guild: makeGuild() });
     await handleInteraction(i);
     assert.match(i.__calls.reply[0].content, /no longer configured/);
 });

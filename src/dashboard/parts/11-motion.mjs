@@ -31,11 +31,18 @@ const HAS_VT = typeof document !== 'undefined' && typeof document.startViewTrans
 // pour out of the button you actually pressed (falls back to screen center for
 // keyboard/command-palette toggles).
 let lastClick = null;
+let trackingClicks = false;
 function installClickTracker() {
+    if (trackingClicks) return;
+    trackingClicks = true;
     document.addEventListener('pointerdown', (e) => {
         lastClick = { x: e.clientX, y: e.clientY, at: Date.now() };
     }, { passive: true });
 }
+// Tracked from the moment this module loads, so the very first theme toggle
+// already sweeps out of the button that was pressed — including on the login
+// page, which never calls installInputUpgrades().
+installClickTracker();
 
 function sweepOrigin(origin) {
     if (origin) return origin;
@@ -44,10 +51,17 @@ function sweepOrigin(origin) {
     return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 }
 
+const SWEEP_MS = 550;
+const SWEEP_EASE = 'cubic-bezier(.23,1,.32,1)';
+
+// Distance to the farthest corner, so one circle always covers the viewport
+// whatever point it starts from.
+function coverRadius({ x, y }) {
+    return Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y)) * 1.02;
+}
+
 function sweepCSS({ x, y }) {
-    // Distances are computed to the farthest corner so one circle always covers
-    // the viewport, whatever point it starts from.
-    const r = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y)) * 1.02;
+    const r = coverRadius({ x, y });
     const at = `${Math.round(x)}px ${Math.round(y)}px`;
     return `
 ::view-transition-group(root){animation-duration:.55s;animation-timing-function:cubic-bezier(.23,1,.32,1)}
@@ -66,12 +80,61 @@ function injectStyleOnce(id, css) {
     el.textContent = css;
 }
 
+// Fallback sweep for browsers without the View Transitions API (Firefox before
+// 144, older Safari, Zen/Waterfox builds lagging their upstream). There is no
+// way to snapshot the old paint, so we approximate it: cover the viewport with
+// the *previous* theme's background, flip the theme underneath it, then shrink
+// that curtain back into the click point. The result reads as the new theme
+// pouring out of the button, which is the whole effect.
+function fallbackSweep(apply, point) {
+    let curtain = null;
+    try {
+        const body = getComputedStyle(document.body);
+        // Prefer the resolved background colour; fall back to the --bg token
+        // and finally a per-theme constant, so a transparent/custom skin still
+        // produces a curtain that matches.
+        const isLight = document.body.classList.contains('light-mode');
+        const bg = (body.backgroundColor && body.backgroundColor !== 'rgba(0, 0, 0, 0)')
+            ? body.backgroundColor
+            : (body.getPropertyValue('--bg').trim() || (isLight ? '#f5f6fa' : '#0b0b10'));
+        curtain = document.createElement('div');
+        curtain.setAttribute('aria-hidden', 'true');
+        curtain.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:99999;will-change:clip-path';
+        curtain.style.background = bg;
+        if (body.backgroundImage && body.backgroundImage !== 'none') curtain.style.backgroundImage = body.backgroundImage;
+        curtain.style.clipPath = `circle(${coverRadius(point)}px at ${Math.round(point.x)}px ${Math.round(point.y)}px)`;
+        document.body.appendChild(curtain);
+        // Force the covering frame to paint before the flip happens underneath,
+        // otherwise the new theme flashes for one frame first.
+        void curtain.offsetWidth;
+    } catch { /* decoration only — never block the flip */ }
+
+    try {
+        apply();
+    } finally {
+        if (!curtain) return;
+        if (typeof curtain.animate !== 'function') { curtain.remove(); return; }
+        const anim = curtain.animate(
+            [{ clipPath: curtain.style.clipPath }, { clipPath: `circle(0px at ${Math.round(point.x)}px ${Math.round(point.y)}px)` }],
+            { duration: SWEEP_MS, easing: SWEEP_EASE, fill: 'forwards' }
+        );
+        anim.onfinish = () => curtain.remove();
+        anim.oncancel = () => curtain.remove();
+    }
+}
+
 // Run `apply` (the actual class/DOM flip) inside an animated view transition.
 export function themeSweep(apply, origin) {
-    if (!HAS_VT || REDUCED) { apply(); return; }
-    const css = sweepCSS(sweepOrigin(origin));
-    injectStyleOnce('tk-theme-sweep', css);
-    document.startViewTransition(apply);
+    if (REDUCED) { apply(); return; }
+    const point = sweepOrigin(origin);
+    if (HAS_VT) {
+        try {
+            injectStyleOnce('tk-theme-sweep', sweepCSS(point));
+            document.startViewTransition(apply);
+            return;
+        } catch { /* transition refused — fall through to the CSS sweep */ }
+    }
+    fallbackSweep(apply, point);
 }
 
 // ──────────────────── 2. Smooth caret ────────────────────
@@ -419,3 +482,15 @@ export function buildAvatarPicker(container, { storageKey = 'tkAvatar', onPick }
     render(false);
     return { get selected() { return selected; }, pick };
 }
+
+// ──────────────────── Diagnostics ────────────────────
+// A single handle to poke the layer from DevTools. `viewTransitions` tells you
+// which theme-sweep path this browser is on: true = native snapshot wipe,
+// false = the CSS curtain fallback.
+try {
+    window.__vigilMotion = {
+        themeSweep, attachSmoothCaret, upgradeInputs, installInputUpgrades,
+        makePillButton, buildAvatarPicker,
+        viewTransitions: HAS_VT, reducedMotion: REDUCED,
+    };
+} catch { /* non-browser/worker context */ }

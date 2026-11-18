@@ -14,8 +14,8 @@ const {
     exportAutoModConfig,
     importAutoModConfig,
     bulkAddFilters,
-    isValidRegex,
 } = require('../../automod');
+const { regexIssue } = require('../../regexGuard');
 const { getClient } = require('../core');
 
 function register(app, ctx) {
@@ -92,11 +92,16 @@ function register(app, ctx) {
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         const { filterType, pattern, action } = req.body;
         if (!filterType || !pattern) return res.status(400).json({ error: 'Missing filterType or pattern' });
-        if (filterType === 'regex' && !isValidRegex(pattern)) {
-            return res.status(400).json({ error: 'Invalid regular expression: ' + pattern });
+        // The add itself re-validates (choke point); pre-checking here just
+        // turns the guard's reason into a 400 the UI can display.
+        if (filterType === 'regex') {
+            const issue = regexIssue(pattern);
+            if (issue) return res.status(400).json({ error: issue });
         }
         try {
-            addAutoModFilter(guild.id, filterType, pattern, action || 'delete');
+            if (!addAutoModFilter(guild.id, filterType, pattern, action || 'delete')) {
+                return res.status(400).json({ error: 'Pattern rejected as unsafe or invalid.' });
+            }
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });

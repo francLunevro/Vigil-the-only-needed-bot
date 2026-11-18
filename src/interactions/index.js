@@ -12,6 +12,7 @@
 //   pv_ / pm_ / pa_ / pvv   polls   (anyone may click)
 //   tk_…   tickets                 (anyone may click; each handler re-checks)
 //   tvc_…  temp-VC panel           (anyone may click their own panel)
+//   ls_…   log-search paging       (initiator-only, like every other button)
 //   rm_…   role menu               (select menu)
 //
 // Every other button is initiator-only: the clicker's id must match the id
@@ -21,6 +22,7 @@ const moderation = require('./moderation');
 const polls = require('./polls');
 const tickets = require('./tickets');
 const tempVoice = require('./tempVoice');
+const logSearch = require('./logSearch');
 
 async function handleInteraction(interaction) {
     if (interaction.isButton()) {
@@ -32,7 +34,7 @@ async function handleInteraction(interaction) {
     if (interaction.isStringSelectMenu()) {
         return handleSelectMenu(interaction);
     }
-    if (interaction.isUserSelect()) {
+    if (interaction.isUserSelectMenu()) {
         return handleUserSelect(interaction);
     }
 }
@@ -110,6 +112,7 @@ async function handleButton(interaction) {
         case 'cp': return moderation.handleConfirmPurge(interaction, parts);
         case 'cancel': return moderation.handleCancel(interaction, parts);
         case 'wm': return moderation.handleWarnModalOpen(interaction, parts);
+        case 'ls': return logSearch.handleLogSearchButton(interaction, parts);
         default:
             await interaction.reply({ content: 'Unknown interaction.', ephemeral: true });
     }
@@ -166,7 +169,10 @@ async function handleSelectMenu(interaction) {
 // ──────────────────── User select ────────────────────
 
 async function handleUserSelect(interaction) {
-    // Currently unused but needed for future user-select menus
+    const parts = interaction.customId.split('_');
+    if (parts[0] === 'tvc') {
+        return require('./tempVoiceModeration').handleModerationSelection(interaction, parts);
+    }
     await interaction.reply({ content: 'User selected.', ephemeral: true });
 }
 

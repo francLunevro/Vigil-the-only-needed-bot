@@ -1,5 +1,6 @@
 const { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const { createRoleMenu, getRoleMenus, addRoleMenuOption, getRoleMenuOptions, removeRoleMenuOption } = require('../roleMenus');
+const { hierarchyBlock } = require('../modGuard');
 
 async function executeRoleMenu(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -49,8 +50,16 @@ async function executeRoleMenu(interaction) {
         if (role.comparePositionTo(guild.members.me.roles.highest) >= 0) {
             return interaction.reply({ content: '⚠️ That role is higher than my highest role. I cannot assign it.', ephemeral: true });
         }
+        // A role menu lets members self-assign this role, so it cannot be one
+        // that outranks the person configuring the menu.
+        const blocked = hierarchyBlock(interaction, null, role);
+        if (blocked) {
+            return interaction.reply({ content: '⚠️ ' + blocked, ephemeral: true });
+        }
 
-        addRoleMenuOption(messageId, role.id, label, emoji);
+        if (!addRoleMenuOption(guild.id, messageId, role.id, label, emoji)) {
+            return interaction.reply({ content: 'Role menu not found in this server.', ephemeral: true });
+        }
 
         const embed = new EmbedBuilder()
             .setColor('Green')
@@ -66,13 +75,13 @@ async function executeRoleMenu(interaction) {
         const messageId = interaction.options.getString('message_id');
         const role = interaction.options.getRole('role');
 
-        const removed = removeRoleMenuOption(messageId, role.id);
+        const removed = removeRoleMenuOption(guild.id, messageId, role.id);
         if (!removed) {
             return interaction.reply({ content: '⚠️ That role is not in this menu.', ephemeral: true });
         }
 
         // Refresh the menu message if it exists
-        const options = getRoleMenuOptions(messageId);
+        const options = getRoleMenuOptions(guild.id, messageId);
         if (options.length > 0) {
             try {
                 const channel = interaction.client.channels.cache.get(interaction.channelId);
@@ -104,7 +113,7 @@ async function executeRoleMenu(interaction) {
 
     } else if (sub === 'publish') {
         const messageId = interaction.options.getString('message_id');
-        const options = getRoleMenuOptions(messageId);
+        const options = getRoleMenuOptions(guild.id, messageId);
 
         if (options.length === 0) {
             return interaction.reply({ content: '⚠️ This menu has no roles! Add some with `/rolemenu add ' + messageId + ' <role> <label>`.', ephemeral: true });
@@ -143,7 +152,7 @@ async function executeRoleMenu(interaction) {
         }
 
         const lines = menus.map(m => {
-            const options = getRoleMenuOptions(m.message_id);
+            const options = getRoleMenuOptions(guild.id, m.message_id);
             const roleList = options.map(o => (o.emoji || '•') + ' ' + o.label).join(', ') || '*No roles added yet*';
             return '`' + m.message_id + '` — ' + (m.title || 'Untitled') + ' (' + options.length + ' roles)\n└ ' + roleList;
         }).join('\n\n');
@@ -178,12 +187,13 @@ async function handleRoleMenuSelect(interaction) {
     const messageId = parts[1];
     const selectedRoles = interaction.values;
     const member = interaction.member;
+    const guild = interaction.guild;
 
-    if (!member) {
+    if (!member || !guild) {
         return interaction.reply({ content: '❌ Could not find your member data.', ephemeral: true });
     }
 
-    const options = getRoleMenuOptions(messageId);
+    const options = getRoleMenuOptions(guild.id, messageId);
     if (options.length === 0) {
         return interaction.reply({ content: '❌ This menu is no longer configured.', ephemeral: true });
     }

@@ -70,6 +70,8 @@ function createDefaultConfig() {
         prefix: ';',
         embedColor: null,
         welcomeConfig: {},
+        modDmConfig: {},
+        ticketSlaConfig: {},
     };
 }
 
@@ -133,6 +135,8 @@ function parseGuildRow(row) {
         prefix: row.prefix || ';',
         embedColor: hexColorToInt(row.embed_color),
         welcomeConfig: JSON.parse(row.welcome_config || '{}'),
+        modDmConfig: JSON.parse(row.mod_dm_config || '{}'),
+        ticketSlaConfig: JSON.parse(row.ticket_sla_config || '{}'),
     };
 }
 
@@ -163,9 +167,9 @@ function getGuildConfig(guildId) {
     // Create default
     const def = createDefaultConfig();
     db.prepare(`
-        INSERT INTO guild_config (guild_id, default_channel, tracked_channels, log_channels, log_categories, prefix, embed_color, welcome_config)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(guildId, null, '[]', JSON.stringify(def.logChannels), JSON.stringify(def.logCategories), ';', null, '{}');
+        INSERT INTO guild_config (guild_id, default_channel, tracked_channels, log_channels, log_categories, prefix, embed_color, welcome_config, mod_dm_config, ticket_sla_config)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(guildId, null, '[]', JSON.stringify(def.logChannels), JSON.stringify(def.logCategories), ';', null, '{}', '{}', '{}');
     return def;
 }
 
@@ -180,7 +184,9 @@ function updateGuildConfigRaw(guildId, g) {
             log_categories = ?,
             prefix = ?,
             embed_color = ?,
-            welcome_config = ?
+            welcome_config = ?,
+            mod_dm_config = ?,
+            ticket_sla_config = ?
         WHERE guild_id = ?
     `).run(
         g.logChannelId || null,
@@ -190,6 +196,8 @@ function updateGuildConfigRaw(guildId, g) {
         g.prefix || ';',
         colorInt !== null ? String(colorInt) : null,
         JSON.stringify(g.welcomeConfig || {}),
+        JSON.stringify(g.modDmConfig || {}),
+        JSON.stringify(g.ticketSlaConfig || {}),
         guildId
     );
 }
@@ -201,7 +209,7 @@ function updateGuildConfigRaw(guildId, g) {
 // doing nothing.
 const GUILD_CONFIG_KEYS = new Set([
     'logChannelId', 'logChannels', 'logCategories', 'trackedChannels',
-    'prefix', 'embedColor', 'welcomeConfig',
+    'prefix', 'embedColor', 'welcomeConfig', 'modDmConfig', 'ticketSlaConfig',
 ]);
 
 function warnUnknownGuildConfigKeys(guildId, cfg) {
@@ -246,8 +254,8 @@ function saveConfig(config) {
     // Save from the old nested format back into SQLite
     const db = getDb();
     const upsert = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, default_channel, tracked_channels, log_channels, log_categories, prefix, embed_color, welcome_config)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO guild_config (guild_id, default_channel, tracked_channels, log_channels, log_categories, prefix, embed_color, welcome_config, mod_dm_config, ticket_sla_config)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = db.transaction(() => {
         for (const [key, val] of Object.entries(config)) {
@@ -267,7 +275,9 @@ function saveConfig(config) {
                     JSON.stringify(val.logCategories || {}),
                     val.prefix || ';',
                     colorInt !== null ? String(colorInt) : null,
-                    JSON.stringify(val.welcomeConfig || {})
+                    JSON.stringify(val.welcomeConfig || {}),
+                    JSON.stringify(val.modDmConfig || {}),
+                    JSON.stringify(val.ticketSlaConfig || {})
                 );
             }
         }

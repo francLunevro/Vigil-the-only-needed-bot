@@ -50,8 +50,8 @@ test('error log: capped at 500 rows', () => {
     clearErrorLogs();
 });
 
-test('backups: create, list, delete round-trip', () => {
-    const b = backupDatabase();
+test('backups: create, list, delete round-trip', async () => {
+    const b = await backupDatabase();
     assert.ok(b && /^bot-\d{14}\.db$/.test(b.name));
     assert.ok(listBackups().some(x => x.name === b.name));
     assert.ok(deleteBackup(b.name));
@@ -63,9 +63,11 @@ test('backups: invalid names rejected (path-traversal guard)', () => {
     assert.strictEqual(deleteBackup('bot-notadate.db'), false);
 });
 
-test('backups: only newest 7 are kept', () => {
-    for (let i = 0; i < 10; i++) backupDatabase();
-    assert.ok(listBackups().length <= 7);
+test('backups: only newest 7 are kept', async () => {
+    const names = new Set();
+    for (let i = 0; i < 10; i++) names.add((await backupDatabase()).name);
+    assert.strictEqual(names.size, 10);
+    assert.strictEqual(listBackups().length, 7);
     for (const b of listBackups()) deleteBackup(b.name);
 });
 
@@ -124,4 +126,82 @@ test('prune: ticket messages of old closed tickets removed, open/recent kept', (
 test('prune: safe to run on a fresh database (no rows, no error)', () => {
     const res = pruneOldData();
     assert.ok(res.commandUsage >= 0 && res.activityCounts >= 0 && res.ticketMessages >= 0);
+});
+
+test('backups: verified snapshot includes committed WAL data pinned by an open reader', async () => {
+    const Database = require('better-sqlite3');
+    const source = getDb();
+    const reader = new Database(path.join(tmp, 'bot.db'), { readonly: true });
+    try {
+        reader.exec('BEGIN');
+        reader.prepare('SELECT COUNT(*) FROM command_usage').get();
+        source.prepare('INSERT INTO command_usage (guild_id, command, user_id, used_at) VALUES (?, ?, ?, ?)')
+            .run('wal-guild', 'help', 'fixture-user', Date.now());
+        const pending = backupDatabase();
+        assert.strictEqual(backupDatabase(), pending, 'concurrent callers join the same snapshot');
+        const backup = await pending;
+        assert.ok(backup);
+        const restored = new Database(path.join(tmp, 'backups', backup.name), { readonly: true });
+        try {
+            assert.strictEqual(restored.pragma('quick_check', { simple: true }), 'ok');
+            assert.strictEqual(restored.prepare('SELECT command FROM command_usage WHERE guild_id = ?').get('wal-guild').command, 'help');
+        } finally {
+            restored.close();
+        }
+        assert.ok(deleteBackup(backup.name));
+    } finally {
+        reader.close();
+    }
+});
+
+test('backups: a failed verification leaves the previous snapshot published', async () => {
+    const previous = await backupDatabase();
+    const db = getDb();
+    db.exec('ALTER TABLE command_usage RENAME TO backup_fixture_usage');
+    try {
+        assert.strictEqual(await backupDatabase(), null);
+        assert.deepStrictEqual(listBackups().map(item => item.name), [previous.name]);
+        assert.deepStrictEqual(fs.readdirSync(path.join(tmp, 'backups')), [previous.name]);
+    } finally {
+        db.exec('ALTER TABLE backup_fixture_usage RENAME TO command_usage');
+        deleteBackup(previous.name);
+    }
+});
+
+test('offline restore recovers snapshot data and keeps a rollback copy when the candidate is invalid', async () => {
+    const Database = require('better-sqlite3');
+    const { verifyBackup } = require('../src/db');
+    const db = getDb();
+    db.prepare('INSERT INTO command_usage (guild_id, command, user_id, used_at) VALUES (?, ?, ?, ?)')
+        .run('restore-guild', 'snapshot', 'fixture-user', Date.now());
+    const backup = await backupDatabase();
+    assert.ok(backup);
+    const restoreDir = fs.mkdtempSync(path.join(tmp, 'restore-'));
+    const restoredPath = path.join(restoreDir, 'bot.db');
+    const candidate = path.join(restoreDir, 'candidate.db');
+    const rollback = path.join(restoreDir, 'rollback.db');
+    fs.copyFileSync(path.join(tmp, 'backups', backup.name), candidate);
+    assert.equal((await verifyBackup(candidate)).verified, true);
+    fs.renameSync(candidate, restoredPath);
+    function readCommand() {
+        const restored = new Database(restoredPath, { readonly: true });
+        try {
+            return restored.prepare("SELECT command FROM command_usage WHERE guild_id = 'restore-guild'").get().command;
+        } finally { restored.close(); }
+    }
+    assert.equal(readCommand(), 'snapshot');
+
+    fs.copyFileSync(restoredPath, rollback);
+    fs.writeFileSync(candidate, 'invalid sqlite snapshot');
+    await assert.rejects(verifyBackup(candidate));
+    assert.equal(readCommand(), 'snapshot', 'invalid candidates never replace the installed database');
+
+    const staged = new Database(restoredPath);
+    try {
+        staged.prepare("UPDATE command_usage SET command = 'post-restore' WHERE guild_id = 'restore-guild'").run();
+    } finally { staged.close(); }
+    assert.equal(readCommand(), 'post-restore');
+    fs.copyFileSync(rollback, restoredPath);
+    assert.equal(readCommand(), 'snapshot');
+    assert.ok(deleteBackup(backup.name));
 });

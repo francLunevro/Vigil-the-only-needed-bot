@@ -675,6 +675,102 @@ function initSchema() {
         // token visible in the dashboard instead of silently powering someone's
         // login. Only the login path writes this.
         { name: '0038_dash_users_last_used_at', run: () => addColumnIfMissing('dash_users', 'last_used_at', 'INTEGER') },
+        // Server-authored commands (see src/customCommands.js). One row per
+        // prefix command; the name is normalized to lowercase so lookups are
+        // case-insensitive without a collation.
+        { name: '0039_create_custom_commands', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS custom_commands (
+                guild_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                response TEXT NOT NULL,
+                as_embed INTEGER NOT NULL DEFAULT 0,
+                uses INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, name)
+            )`);
+        } },
+        // Trigger -> response rules that fire on ordinary messages.
+        { name: '0040_create_autoresponders', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS autoresponders (
+                id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                match_type TEXT NOT NULL DEFAULT 'contains',
+                response TEXT NOT NULL,
+                channel_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                cooldown_ms INTEGER NOT NULL DEFAULT 10000,
+                uses INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT,
+                created_at INTEGER NOT NULL
+            )`);
+            db.exec('CREATE INDEX IF NOT EXISTS idx_autoresponders_guild ON autoresponders(guild_id)');
+        } },
+        // Roles handed out for a fixed window (see src/tempRoles.js). One row
+        // per (guild, user, role) — re-granting the same role extends the row
+        // rather than stacking duplicates.
+        { name: '0041_create_temp_roles', run: () => {
+            db.exec(`CREATE TABLE IF NOT EXISTS temp_roles (
+                id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                granted_by TEXT,
+                granted_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            )`);
+            db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_temp_roles_unique ON temp_roles(guild_id, user_id, role_id)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_temp_roles_due ON temp_roles(expires_at)');
+        } },
+        // Moderation DM receipts (see src/modDm.js): the per-guild on/off switch
+        // and the appeal instructions that go out with every punishment DM.
+        { name: '0042_guild_config_mod_dm', run: () => addColumnIfMissing('guild_config', 'mod_dm_config', "TEXT NOT NULL DEFAULT '{}'") },
+        // Ticket SLA tracking (see src/ticketSla.js): the first staff response
+        // on a ticket, when that ticket was last alerted about, and the
+        // per-guild thresholds. All four are additive — a database that never
+        // runs this still works, it just has no SLA data to show.
+        { name: '0043_ticket_sla', run: () => {
+            addColumnIfMissing('tickets', 'first_response_at', 'INTEGER');
+            addColumnIfMissing('tickets', 'first_response_by', 'TEXT');
+            addColumnIfMissing('tickets', 'sla_alerted_at', 'INTEGER');
+            addColumnIfMissing('guild_config', 'ticket_sla_config', "TEXT NOT NULL DEFAULT '{}'");
+            // The first-response hook runs on every human message, so the
+            // channel lookup has to stay an index seek rather than a scan.
+            db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_channel ON tickets(channel_id)');
+        } },
+        { name: '0044_scheduled_action_recovery', run: () => {
+            for (const table of ['scheduled_posts', 'reminders', 'temp_bans']) {
+                addColumnIfMissing(table, 'delivery_state', "TEXT NOT NULL DEFAULT 'pending'");
+                addColumnIfMissing(table, 'dispatch_started_at', 'INTEGER');
+                addColumnIfMissing(table, 'retry_at', 'INTEGER NOT NULL DEFAULT 0');
+            }
+            for (const table of ['scheduled_posts', 'reminders']) {
+                addColumnIfMissing(table, 'last_message_id', 'TEXT');
+            }
+            addColumnIfMissing('temp_bans', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+            addColumnIfMissing('temp_bans', 'ban_marker', 'TEXT');
+            db.exec(`
+                UPDATE scheduled_posts SET delivery_state = 'failed'
+                WHERE delivery_state = 'pending' AND attempts >= 3;
+                UPDATE reminders SET delivery_state = CASE WHEN notified = 1 THEN 'delivered' ELSE 'failed' END
+                WHERE delivery_state = 'pending' AND (notified = 1 OR attempts >= 3);
+            `);
+        } },
+        { name: '0045_temp_vc_moderation', run: () => {
+            addColumnIfMissing('temp_vc_channels', 'retiring', 'INTEGER NOT NULL DEFAULT 0');
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS temp_vc_blocks (
+                    channel_id TEXT NOT NULL REFERENCES temp_vc_channels(channel_id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    previous_allow INTEGER NOT NULL CHECK (previous_allow IN (0, 1)),
+                    had_overwrite INTEGER NOT NULL CHECK (had_overwrite IN (0, 1)),
+                    confirmed INTEGER NOT NULL DEFAULT 0 CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (channel_id, user_id)
+                );
+            `);
+        } },
     ];
 
     for (const migration of MIGRATIONS) {
@@ -1012,9 +1108,7 @@ function clearErrorLogs(tag = null) {
 }
 
 // ──────────────────── Database Backups ────────────────────
-// Copies bot.db into <DATA_DIR>/backups/ and keeps the newest MAX_BACKUPS.
-// better-sqlite3 is fully synchronous and single-process here, so copying the
-// file between operations yields a consistent snapshot.
+// Publish only complete, verified SQLite snapshots. Keep the newest MAX_BACKUPS.
 const BACKUP_DIR = path.join(getDataDir(), 'backups');
 const MAX_BACKUPS = 7;
 const BACKUP_NAME_RE = /^bot-\d{14}\.db$/;
@@ -1034,30 +1128,61 @@ function listBackups() {
     }
 }
 
+let backupInProgress;
+let lastBackupTimestamp = 0;
+
 function backupDatabase() {
+    if (!backupInProgress) {
+        backupInProgress = createVerifiedBackup().finally(() => { backupInProgress = null; });
+    }
+    return backupInProgress;
+}
+
+async function createVerifiedBackup() {
     if (!fs.existsSync(DB_PATH)) return null;
+    let stagingDir;
     try {
-        if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
-        // Flush any WAL frames so the copied file is self-contained.
-        try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch {}
-        const name = 'bot-' + new Date().toISOString().replace(/[-:TZ]/g, '').replace(/\.\d{3}/, '') + '.db';
-        const dest = path.join(BACKUP_DIR, name);
-        fs.copyFileSync(DB_PATH, dest);
-        // Prune old backups, keep the newest MAX_BACKUPS.
-        for (const old of listBackups().slice(MAX_BACKUPS)) {
+        fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+        stagingDir = fs.mkdtempSync(path.join(BACKUP_DIR, '.snapshot-'));
+        const staged = path.join(stagingDir, 'snapshot.db');
+        await getDb().backup(staged);
+        // Publish a standalone file that can also be opened on read-only media.
+        const snapshot = new Database(staged);
+        try {
+            if (snapshot.pragma('journal_mode = DELETE', { simple: true }) !== 'delete') {
+                throw new Error('Could not finalize standalone backup');
+            }
+        } finally {
+            snapshot.close();
+        }
+        if (!(await verifyBackup(staged)).verified) return null;
+
+        // Preserve the public timestamp format, even for successive backups in one second.
+        let timestamp = Math.max(Date.now(), lastBackupTimestamp + 1000);
+        let name;
+        let dest;
+        do {
+            name = 'bot-' + new Date(timestamp).toISOString().slice(0, 19).replace(/[-:T]/g, '') + '.db';
+            dest = path.join(BACKUP_DIR, name);
+            timestamp += 1000;
+        } while (fs.existsSync(dest));
+        fs.renameSync(staged, dest);
+        lastBackupTimestamp = timestamp - 1000;
+
+        for (const old of listBackups().filter(item => item.name !== name).slice(MAX_BACKUPS - 1)) {
             try { fs.unlinkSync(path.join(BACKUP_DIR, old.name)); } catch {}
         }
-        const backup = { name, size: fs.statSync(dest).size, createdAt: Date.now() };
-        
-        // Verify backup integrity asynchronously
-        setImmediate(() => verifyBackup(dest).catch(err => {
-            logError(err, 'db', 'backup_verification');
-        }));
-        
-        return backup;
+        return { name, size: fs.statSync(dest).size, createdAt: Date.now() };
     } catch (err) {
-        console.error('[DB] Backup failed:', err.message);
+        logError(err, 'db', 'backup_create');
         return null;
+    } finally {
+        if (stagingDir) {
+            for (const name of ['snapshot.db', 'snapshot.db-wal', 'snapshot.db-shm', 'snapshot.db-journal']) {
+                try { fs.unlinkSync(path.join(stagingDir, name)); } catch {}
+            }
+            try { fs.rmdirSync(stagingDir); } catch {}
+        }
     }
 }
 
@@ -1072,7 +1197,7 @@ function verifyBackup(backupPath) {
             }
             verifyDb = new Database(backupPath, { readonly: true });
             // Quick integrity check
-            const result = verifyDb.pragma('quick_check');
+            const result = verifyDb.pragma('quick_check', { simple: true });
             if (result !== 'ok') {
                 throw new Error(`Backup integrity check failed: ${result}`);
             }

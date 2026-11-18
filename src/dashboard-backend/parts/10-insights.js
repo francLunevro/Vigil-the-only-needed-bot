@@ -4,12 +4,14 @@
 
 const os = require('os');
 const { getDb } = require('../../db');
+const { logError } = require('../../logError');
 const { getGuildStats } = require('../../stats');
 const { formatUptime } = require('../../helpers');
 const { getClient } = require('../core');
+const { logActivity, getActivity } = require('../../botActivity');
 
 function register(app, ctx) {
-    const { requireAuth, getScopedGuildIds, filterByScope } = ctx;
+    const { requireAuth, requireOwner, getScopedGuildIds, getLiveGuildScope } = ctx;
 
     // ── Bot Activity Timeline ──
     app.get('/api/activity/timeline', requireAuth, (req, res) => {
@@ -19,20 +21,25 @@ function register(app, ctx) {
         const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
         const db = getDb();
         const events = db.prepare('SELECT * FROM bot_activity WHERE timestamp > ? ORDER BY timestamp DESC LIMIT 1000').all(cutoff);
-        res.json(events);
+        // Activity rows carry their guild in the JSON payload. Scoped callers
+        // only receive rows they can prove belong to a granted guild; rows with
+        // no guild id are withheld (fail closed), the same rule the SSE stream
+        // uses for scoped clients.
+        const scoped = getScopedGuildIds(req);
+        if (scoped === null) return res.json(events);
+        res.json(events.filter((event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                return data && data.guildId !== undefined && scoped.has(String(data.guildId));
+            } catch {
+                return false;
+            }
+        }));
     });
 
-    // Log bot activity events
-    global.logBotActivity = function(type, data = {}) {
-        try {
-            const db = getDb();
-            db.prepare('INSERT INTO bot_activity (type, data, timestamp) VALUES (?, ?, ?)')
-                .run(type, JSON.stringify(data), Date.now());
-            // Keep last 10000 events. id DESC keeps the tie-break deterministic
-            // for events sharing one millisecond (see message_log retention).
-            db.prepare('DELETE FROM bot_activity WHERE id NOT IN (SELECT id FROM bot_activity ORDER BY timestamp DESC, id DESC LIMIT 10000)').run();
-        } catch {}
-    };
+    // Kept for callers that reach the logger through the global (the writer
+    // itself lives in src/botActivity.js so event handlers can require it).
+    global.logBotActivity = logActivity;
 
     // ── Server Comparison / Multi-server Analytics ──
     app.get('/api/analytics/servers/compare', requireAuth, (req, res) => {
@@ -40,7 +47,8 @@ function register(app, ctx) {
         if (!client) return res.json([]);
         const metric = req.query.metric || 'members'; // members, joins, leaves, boosts, channels
         const limit = Math.min(parseInt(req.query.limit) || 10, 50);
-        const servers = client.guilds.cache.map(g => {
+        const scoped = getScopedGuildIds(req);
+        const servers = client.guilds.cache.filter(g => scoped === null || scoped.has(String(g.id))).map(g => {
             const stats = getGuildStats(g.id);
             let value = g.memberCount;
             if (metric === 'joins') value = stats.totalJoins || 0;
@@ -60,7 +68,11 @@ function register(app, ctx) {
         const days = Math.min(parseInt(req.query.days) || 7, 30);
         const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
         const db = getDb();
-        const rows = db.prepare('SELECT command, guild_id, COUNT(*) as count FROM command_usage WHERE used_at > ? GROUP BY command, guild_id ORDER BY count DESC LIMIT 500').all(cutoff);
+        const allRows = db.prepare('SELECT command, guild_id, COUNT(*) as count FROM command_usage WHERE used_at > ? GROUP BY command, guild_id ORDER BY count DESC LIMIT 500').all(cutoff);
+        const scoped = getScopedGuildIds(req);
+        const rows = scoped === null
+            ? allRows
+            : allRows.filter(r => scoped.has(String(r.guild_id)));
         const heatmap = {};
         for (const r of rows) {
             if (!heatmap[r.command]) heatmap[r.command] = {};
@@ -73,10 +85,13 @@ function register(app, ctx) {
     app.get('/api/stats/aggregate', requireAuth, (req, res) => {
         const client = getClient();
         if (!client) return res.json({});
-        const totalJoins = client.guilds.cache.reduce((a, g) => a + (getGuildStats(g.id).totalJoins || 0), 0);
-        const totalLeaves = client.guilds.cache.reduce((a, g) => a + (getGuildStats(g.id).totalLeaves || 0), 0);
+        const scoped = getScopedGuildIds(req);
+        const guilds = [...client.guilds.cache.values()]
+            .filter(g => scoped === null || scoped.has(String(g.id)));
+        const totalJoins = guilds.reduce((a, g) => a + (getGuildStats(g.id).totalJoins || 0), 0);
+        const totalLeaves = guilds.reduce((a, g) => a + (getGuildStats(g.id).totalLeaves || 0), 0);
         const allSnapshots = [];
-        client.guilds.cache.forEach(g => {
+        guilds.forEach(g => {
             const s = getGuildStats(g.id);
             if (s.dailySnapshots) allSnapshots.push(...s.dailySnapshots);
         });
@@ -94,8 +109,8 @@ function register(app, ctx) {
             totalJoins, totalLeaves,
             netGrowth: totalJoins - totalLeaves,
             timeline,
-            serverCount: client.guilds.cache.size,
-            totalMembers: client.guilds.cache.reduce((a, g) => a + g.memberCount, 0),
+            serverCount: guilds.length,
+            totalMembers: guilds.reduce((a, g) => a + g.memberCount, 0),
         });
     });
 
@@ -105,13 +120,29 @@ function register(app, ctx) {
         if (!client) return res.json({ top: [], total: 0, users: 0 });
         const db = getDb();
         try {
-            // Overall top commands across all servers
-            const top = db.prepare('SELECT command, COUNT(*) as count, COUNT(DISTINCT guild_id) as servers FROM command_usage GROUP BY command ORDER BY count DESC LIMIT 20').all();
-            const total = db.prepare('SELECT COUNT(*) as total FROM command_usage').get();
-            const users = db.prepare('SELECT COUNT(DISTINCT user_id) as users FROM command_usage').get();
-            // Per-server breakdown for top 5 servers by usage
-            const perServer = db.prepare('SELECT guild_id, command, COUNT(*) as count FROM command_usage GROUP BY guild_id, command ORDER BY count DESC LIMIT 30').all();
-            const enriched = filterByScope(req, perServer, 'guild_id').map(r => ({
+            const scoped = getScopedGuildIds(req);
+            // The aggregate queries carry the same tenant boundary as the
+            // per-server breakdown. An empty grant list must not fall through
+            // to "no WHERE clause" and reveal every guild's usage.
+            let where = '';
+            let params = [];
+            if (scoped !== null) {
+                const ids = [...scoped].map(String);
+                if (ids.length === 0) {
+                    return res.json({ top: [], perServer: [], total: 0, users: 0 });
+                }
+                where = ' WHERE guild_id IN (' + ids.map(() => '?').join(',') + ')';
+                params = ids;
+            }
+            // Overall top commands across the caller's servers
+            const top = db.prepare('SELECT command, COUNT(*) as count, COUNT(DISTINCT guild_id) as servers FROM command_usage' + where + ' GROUP BY command ORDER BY count DESC LIMIT 20').all(...params);
+            const total = db.prepare('SELECT COUNT(*) as total FROM command_usage' + where).get(...params);
+            const users = db.prepare('SELECT COUNT(DISTINCT user_id) as users FROM command_usage' + where).get(...params);
+            // Per-server breakdown for the top servers by usage. The scope goes
+            // into the SQL, not a post-filter: slicing the global top 30 first
+            // would let other guilds crowd a scoped caller's rows out entirely.
+            const perServer = db.prepare('SELECT guild_id, command, COUNT(*) as count FROM command_usage' + where + ' GROUP BY guild_id, command ORDER BY count DESC LIMIT 30').all(...params);
+            const enriched = perServer.map(r => ({
                 guildName: client.guilds.cache.get(r.guild_id)?.name || r.guild_id,
                 command: r.command, count: r.count,
             }));
@@ -147,22 +178,19 @@ function register(app, ctx) {
     });
 
     // ── Activity Feed ──
+    // One row per recorded event, newest first. This used to invent a row per
+    // guild from the all-time join counter with `time: Date.now()`, so a server
+    // that had never recorded a join showed nothing at all, every row claimed to
+    // have just happened, and leaves could never appear.
     app.get('/api/activity', requireAuth, (req, res) => {
-        const client = getClient();
-        if (!client) return res.json([]);
-        const recent = [];
-        client.guilds.cache.forEach(g => {
-            const s = getGuildStats(g.id);
-            if (s.totalJoins > 0) recent.push({
-                type: 'join', guildName: g.name, guildId: g.id,
-                count: s.totalJoins, time: Date.now(),
-            });
-        });
-        res.json(filterByScope(req, recent.slice(-30), 'guildId'));
+        const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+        res.json(getActivity({ scopedGuildIds: getScopedGuildIds(req), limit }));
     });
 
     // ── System Info ──
-    app.get('/api/system', requireAuth, (req, res) => {
+    // Host vitals are not guild-scoped, so there is no safe way to show them to
+    // a scoped dashboard user. Keep them behind the owner gate.
+    app.get('/api/system', requireAuth, requireOwner, (req, res) => {
         const mem = process.memoryUsage();
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
@@ -269,7 +297,7 @@ function register(app, ctx) {
             { name:'note', description:'Private staff notes on users (add/list/edit/remove)', usage:'/note add|list|edit|remove' },
         ]},
         { category:'Log Search', owner:true, commands:[
-            { name:'logs', description:'Search through logged messages and events', usage:'/logs search [user] [keyword] [action] [limit]' },
+            { name:'logs', description:'Search stored deleted/edited messages, paged 5 at a time', usage:'/logs search [query] [user] [channel] [action] [limit]' },
         ]},
         { category:'Owner', owner:true, commands:[
             { name:'dashboard', description:'Get the link to the web dashboard', usage:'/dashboard' },
@@ -284,30 +312,60 @@ function register(app, ctx) {
     });
 
     // ── SSE: Real-time events ──
-    const sseClients = new Map(); // res -> Set of allowed guildIds (null = unrestricted)
+    const sseClients = new Map();
+    let acceptingStreams = true;
+
+    function closeStream(res, destroy = false) {
+        sseClients.delete(res);
+        if (destroy) res.destroy();
+        else res.end();
+    }
+
     app.get('/api/events', requireAuth, (req, res) => {
+        if (!acceptingStreams) return res.status(503).json({ error: 'Dashboard is shutting down' });
+        const token = req.sessionToken;
+        if (sseClients.size >= 128 || [...sseClients.values()].filter(value => value === token).length >= 8) {
+            return res.status(429).json({ error: 'Too many event streams' });
+        }
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache, no-transform',
+            'X-Accel-Buffering': 'no',
         });
-        res.write('data: {"type":"connected"}\n\n');
-        sseClients.set(res, getScopedGuildIds(req));
-        req.on('close', () => sseClients.delete(res));
+        res.on('close', () => sseClients.delete(res));
+        sseClients.set(res, token);
+        if (!res.write('data: {"type":"connected"}\n\n')) closeStream(res, true);
     });
 
-    // Helper to broadcast events. Scoped clients only receive events whose
-    // data.guildId is in their granted set; events without a guildId are
-    // withheld from scoped clients entirely (fail-closed).
-    global.broadcastDashboard = function broadcastDashboard(type, data) {
-        for (const [res, scoped] of sseClients) {
-            if (scoped) {
-                const gid = data && data.guildId !== undefined ? String(data.guildId) : null;
-                if (!gid || !scoped.has(gid)) continue;
+    function sendToStreams(message, allowsDelivery) {
+        const scopes = new Map();
+        for (const [res, token] of sseClients) {
+            try {
+                if (!scopes.has(token)) scopes.set(token, getLiveGuildScope(token));
+                const scope = scopes.get(token);
+                if (scope === undefined) closeStream(res);
+                else if (allowsDelivery(scope) && !res.write(message)) closeStream(res, true);
+            } catch (err) {
+                scopes.set(token, undefined);
+                closeStream(res, true);
+                logError(err, 'dashboard', 'event_stream');
             }
-            const msg = 'data: ' + JSON.stringify({ type: type, data: data, time: Date.now() }) + '\n\n';
-            try { res.write(msg); } catch { sseClients.delete(res); }
         }
+    }
+
+    const heartbeat = setInterval(() => sendToStreams(': heartbeat\n\n', () => true), 15000);
+    heartbeat.unref();
+    app.locals.stopEventStreams = () => {
+        acceptingStreams = false;
+        clearInterval(heartbeat);
+        for (const res of sseClients.keys()) closeStream(res);
+    };
+
+    global.broadcastDashboard = function broadcastDashboard(type, data) {
+        if (!sseClients.size) return;
+        const guildId = data?.guildId === undefined || data.guildId === null ? null : String(data.guildId);
+        const message = 'data: ' + JSON.stringify({ type, data, time: Date.now() }) + '\n\n';
+        sendToStreams(message, scope => scope === null || (guildId !== null && scope.has(guildId)));
     };
 
     // ── Server Insights: Message activity ──

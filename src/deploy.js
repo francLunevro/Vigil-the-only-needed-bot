@@ -1,6 +1,7 @@
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 const { logError } = require('./logError');
 const { LOG_CATEGORIES, LOG_CATEGORY_LABELS } = require('./constants');
+const { applyCommandPolicy } = require('./commandPolicy');
 
 // /log channel + /log toggle both offer every log category, built from the
 // dispatcher's own list so the two surfaces can't drift.
@@ -33,6 +34,10 @@ const commandDefs = [
                     { name: 'Config', value: 'config' },
                     { name: 'Permissions', value: 'permissions' },
                     { name: 'Role Menus', value: 'rolemenus' },
+                    // Values are matched against the help category NAME
+                    // (case-insensitive), so multi-word categories need the
+                    // space — 'customcommands' would never resolve.
+                    { name: 'Custom Commands', value: 'custom commands' },
                     { name: 'Auto-Mod', value: 'automod' },
                     { name: 'Reaction Roles', value: 'reactionroles' },
                     { name: 'Welcome / Goodbye', value: 'welcome' },
@@ -378,6 +383,16 @@ const commandDefs = [
                 .setDescription('New reason text')
                 .setRequired(true)
                 .setMaxLength(1000)),
+
+    // Everything staff know about one member — warnings, cases, notes,
+    // reports, appeals and tickets in one ephemeral view (src/memberFile.js).
+    new SlashCommandBuilder()
+        .setName('memberfile')
+        .setDescription('Open the full staff file for a member')
+        .addUserOption(opt =>
+            opt.setName('user')
+                .setDescription('The member to open the file for')
+                .setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('poll')
@@ -768,6 +783,21 @@ const commandDefs = [
             sub.setName('unlock')
                 .setDescription('Unlock your temp channel'))
         .addSubcommand(sub =>
+            sub.setName('kick')
+                .setDescription('Disconnect a member from your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to disconnect').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('block')
+                .setDescription('Block a member from joining your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to block').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('unblock')
+                .setDescription('Remove a Vigil block from your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to unblock').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('blocked')
+                .setDescription('View the members Vigil has blocked from your temporary voice channel'))
+        .addSubcommand(sub =>
             sub.setName('claim')
                 .setDescription('Take ownership of the temp channel you are in')),
     new SlashCommandBuilder()
@@ -1039,6 +1069,127 @@ const commandDefs = [
         .addSubcommand(sub =>
             sub.setName('list')
                 .setDescription('List all role menus in this server')),
+
+    // ── Temporary Roles (owner only) ──
+    new SlashCommandBuilder()
+        .setName('temprole')
+        .setDescription('Give a member a role for a set time, then remove it automatically')
+        .addSubcommand(sub =>
+            sub.setName('add')
+                .setDescription('Grant a role that expires after a set duration')
+                .addUserOption(opt =>
+                    opt.setName('user')
+                        .setDescription('Who gets the role')
+                        .setRequired(true))
+                .addRoleOption(opt =>
+                    opt.setName('role')
+                        .setDescription('The role to grant')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('duration')
+                        .setDescription('How long it lasts (30m, 24h, 7d, 1h30m)')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('reason')
+                        .setDescription('Why — recorded in the case file')
+                        .setRequired(false)))
+        .addSubcommand(sub =>
+            sub.setName('remove')
+                .setDescription('Remove a pending temporary role early')
+                .addUserOption(opt =>
+                    opt.setName('user')
+                        .setDescription('The member')
+                        .setRequired(true))
+                .addRoleOption(opt =>
+                    opt.setName('role')
+                        .setDescription('The role to take back')
+                        .setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List pending temporary roles in this server')
+                .addUserOption(opt =>
+                    opt.setName('user')
+                        .setDescription('Only show this member\'s entries')
+                        .setRequired(false))),
+
+    // ── Custom Commands & Autoresponders (owner only) ──
+    new SlashCommandBuilder()
+        .setName('customcommand')
+        .setDescription('Write your own prefix commands (e.g. ;rules answers with text you wrote)')
+        .addSubcommand(sub =>
+            sub.setName('add')
+                .setDescription('Create or overwrite a custom command')
+                .addStringOption(opt =>
+                    opt.setName('name')
+                        .setDescription('What to type after the prefix (letters, numbers, - and _)')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('response')
+                        .setDescription('What the bot replies with. Supports {user} {server} {membercount} {channel} {args}')
+                        .setRequired(true))
+                .addBooleanOption(opt =>
+                    opt.setName('embed')
+                        .setDescription('Show the response as an embed instead of plain text')
+                        .setRequired(false)))
+        .addSubcommand(sub =>
+            sub.setName('remove')
+                .setDescription('Delete a custom command')
+                .addStringOption(opt =>
+                    opt.setName('name')
+                        .setDescription('The command name to delete')
+                        .setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List this server\'s custom commands')),
+
+    new SlashCommandBuilder()
+        .setName('autoresponder')
+        .setDescription('Reply automatically when a message matches a trigger')
+        .addSubcommand(sub =>
+            sub.setName('add')
+                .setDescription('Create an autoresponder')
+                .addStringOption(opt =>
+                    opt.setName('trigger')
+                        .setDescription('Text to look for (a regular expression when match is regex)')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('response')
+                        .setDescription('What the bot replies with. Supports {user} {server} {channel}')
+                        .setRequired(true))
+                .addStringOption(opt =>
+                    opt.setName('match')
+                        .setDescription('How to compare the trigger (default: contains)')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'contains', value: 'contains' },
+                            { name: 'exact message', value: 'exact' },
+                            { name: 'starts with', value: 'startswith' },
+                            { name: 'regular expression', value: 'regex' }))
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Only reply in this channel (default: everywhere)')
+                        .setRequired(false)))
+        .addSubcommand(sub =>
+            sub.setName('remove')
+                .setDescription('Delete an autoresponder')
+                .addStringOption(opt =>
+                    opt.setName('id')
+                        .setDescription('Responder ID (see /autoresponder list)')
+                        .setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('toggle')
+                .setDescription('Enable or pause an autoresponder')
+                .addStringOption(opt =>
+                    opt.setName('id')
+                        .setDescription('Responder ID (see /autoresponder list)')
+                        .setRequired(true))
+                .addBooleanOption(opt =>
+                    opt.setName('enabled')
+                        .setDescription('true to enable, false to pause')
+                        .setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List this server\'s autoresponders')),
 
     // ── Auto-Mod (owner only) ──
     new SlashCommandBuilder()
@@ -1428,21 +1579,26 @@ const commandDefs = [
     // ── Log Search (owner only) ──
     new SlashCommandBuilder()
         .setName('logs')
-        .setDescription('Search through logged messages and events')
+        .setDescription('Search the stored message log (deleted and edited messages)')
         .addSubcommand(sub =>
             sub.setName('search')
-                .setDescription('Search through message logs')
+                .setDescription('Find stored messages — every word you give has to match')
+                .addStringOption(opt =>
+                    opt.setName('query')
+                        .setDescription('Words to find; all must appear. "Quote a run" for an exact phrase')
+                        .setRequired(false)
+                        .setMaxLength(200))
                 .addUserOption(opt =>
                     opt.setName('user')
-                        .setDescription('Filter by user')
+                        .setDescription('Only messages from this user')
                         .setRequired(false))
-                .addStringOption(opt =>
-                    opt.setName('keyword')
-                        .setDescription('Search for a keyword in message content')
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Only messages from this channel')
                         .setRequired(false))
                 .addStringOption(opt =>
                     opt.setName('action')
-                        .setDescription('Filter by action type')
+                        .setDescription('Only deleted or only edited messages')
                         .setRequired(false)
                         .addChoices(
                             { name: 'Deleted', value: 'deleted' },
@@ -1450,10 +1606,10 @@ const commandDefs = [
                         ))
                 .addIntegerOption(opt =>
                     opt.setName('limit')
-                        .setDescription('Number of results (max 50)')
+                        .setDescription('How many matches to page through (default 50, max 200)')
                         .setRequired(false)
                         .setMinValue(1)
-                        .setMaxValue(50))),
+                        .setMaxValue(200))),
 
     // ── Reaction Roles (owner only) ──
     // ── Tickets v2: Multi-Panel (owner only) ──
@@ -1789,5 +1945,11 @@ async function deployCommands(clientUser) {
         return 'Discord API: ' + msg + (code ? ' (code ' + code + ')' : '');
     }
 }
+
+// ──────────────────── Visibility policy ────────────────────
+// Who can see and run each command is decided in one place; see
+// src/commandPolicy.js. Applying it here means the defs we register and the
+// defs tests inspect are the same objects.
+for (const def of commandDefs) applyCommandPolicy(def);
 
 module.exports = { commandDefs, deployCommands };

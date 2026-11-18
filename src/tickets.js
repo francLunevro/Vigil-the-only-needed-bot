@@ -12,6 +12,7 @@ const {
 const { getDb } = require('./db');
 const { logError } = require('./logError');
 const { displayColorToInt } = require('./config');
+const { formatDuration } = require('./helpers');
 
 let client = null;
 
@@ -61,9 +62,9 @@ function getPanels(guildId) {
     return db.prepare('SELECT * FROM ticket_panels WHERE guild_id = ? ORDER BY created_at ASC').all(guildId);
 }
 
-function getPanel(panelId) {
+function getPanel(panelId, guildId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM ticket_panels WHERE id = ?').get(panelId);
+    return db.prepare('SELECT * FROM ticket_panels WHERE id = ? AND guild_id = ?').get(panelId, guildId);
 }
 
 function createPanel(guildId, name) {
@@ -71,28 +72,32 @@ function createPanel(guildId, name) {
     const id = generateId();
     db.prepare(`INSERT INTO ticket_panels (id, guild_id, name, created_at) VALUES (?, ?, ?, ?)`)
         .run(id, guildId, name, Date.now());
-    return getPanel(id);
+    return getPanel(id, guildId);
 }
 
-function updatePanel(panelId, updates) {
+function updatePanel(panelId, updates, guildId) {
     const db = getDb();
-    const current = db.prepare('SELECT * FROM ticket_panels WHERE id = ?').get(panelId);
+    const current = getPanel(panelId, guildId);
     if (!current) return null;
     const merged = { ...current, ...updates };
-    db.prepare(`UPDATE ticket_panels SET name = ?, channel_id = ?, panel_message_id = ?, color = ?, image_url = ?, description = ? WHERE id = ?`)
-        .run(merged.name, merged.channel_id || null, merged.panel_message_id || null, merged.color || '#5865F2', merged.image_url || null, merged.description || '', panelId);
-    return getPanel(panelId);
+    db.prepare(`UPDATE ticket_panels SET name = ?, channel_id = ?, panel_message_id = ?, color = ?, image_url = ?, description = ? WHERE id = ? AND guild_id = ?`)
+        .run(merged.name, merged.channel_id || null, merged.panel_message_id || null, merged.color || '#5865F2', merged.image_url || null, merged.description || '', panelId, guildId);
+    return getPanel(panelId, guildId);
 }
 
-function deletePanel(panelId) {
+function deletePanel(panelId, guildId) {
     const db = getDb();
-    db.prepare('DELETE FROM ticket_panel_types WHERE panel_id = ?').run(panelId);
-    db.prepare('DELETE FROM ticket_panels WHERE id = ?').run(panelId);
+    return db.transaction(() => {
+        const deleted = db.prepare('DELETE FROM ticket_panels WHERE id = ? AND guild_id = ?').run(panelId, guildId);
+        if (!deleted.changes) return false;
+        db.prepare('DELETE FROM ticket_panel_types WHERE panel_id = ? AND guild_id = ?').run(panelId, guildId);
+        return true;
+    })();
 }
 
-function clonePanel(panelId) {
+function clonePanel(panelId, guildId) {
     const db = getDb();
-    const panel = db.prepare('SELECT * FROM ticket_panels WHERE id = ?').get(panelId);
+    const panel = getPanel(panelId, guildId);
     if (!panel) return null;
     const newId = generateId();
     const newName = (panel.name || 'Panel') + ' (copy)';
@@ -102,7 +107,7 @@ function clonePanel(panelId) {
         panel.image_url || null, panel.description || '', Date.now()
     );
     // Clone all types
-    const types = db.prepare('SELECT * FROM ticket_panel_types WHERE panel_id = ?').all(panelId);
+    const types = getPanelTypes(panelId, guildId);
     for (const t of types) {
         const newTypeId = generateId();
         db.prepare(`INSERT INTO ticket_panel_types (id, panel_id, guild_id, name, emoji, category_id, support_roles, welcome_message, ticket_name_format, questions, sort_order, created_at, inactivity_timeout, inactivity_grace)
@@ -112,61 +117,75 @@ function clonePanel(panelId) {
             t.questions, t.sort_order, Date.now(), t.inactivity_timeout, t.inactivity_grace
         );
     }
-    return getPanel(newId);
+    return getPanel(newId, guildId);
 }
 
 // ──────────────────── Panel Type CRUD ────────────────────
 
-function getPanelTypes(panelId) {
+function getPanelTypes(panelId, guildId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM ticket_panel_types WHERE panel_id = ? ORDER BY sort_order ASC, created_at ASC').all(panelId);
+    return db.prepare('SELECT * FROM ticket_panel_types WHERE panel_id = ? AND guild_id = ? ORDER BY sort_order ASC, created_at ASC').all(panelId, guildId);
 }
 
-function getPanelTicketCounter(panelId) {
+function getPanelTicketCounter(panelId, guildId) {
     const db = getDb();
-    const row = db.prepare('SELECT ticket_counter FROM ticket_panels WHERE id = ?').get(panelId);
+    const row = db.prepare('SELECT ticket_counter FROM ticket_panels WHERE id = ? AND guild_id = ?').get(panelId, guildId);
     return row ? row.ticket_counter : null;
 }
 
-function setPanelTicketCounter(panelId, count) {
+function setPanelTicketCounter(panelId, count, guildId) {
     const db = getDb();
-    db.prepare('UPDATE ticket_panels SET ticket_counter = ? WHERE id = ?').run(count, panelId);
-    return true;
+    return db.prepare('UPDATE ticket_panels SET ticket_counter = ? WHERE id = ? AND guild_id = ?').run(count, panelId, guildId).changes > 0;
 }
 
-function getPanelType(typeId) {
+function getPanelType(typeId, guildId) {
     const db = getDb();
-    return db.prepare('SELECT * FROM ticket_panel_types WHERE id = ?').get(typeId);
+    return db.prepare('SELECT * FROM ticket_panel_types WHERE id = ? AND guild_id = ?').get(typeId, guildId);
 }
 
 function createPanelType(panelId, guildId, name, emoji) {
+    if (!getPanel(panelId, guildId)) return null;
     const db = getDb();
     const id = generateId();
     db.prepare(`INSERT INTO ticket_panel_types (id, panel_id, guild_id, name, emoji, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(id, panelId, guildId, name, emoji || '🎫', Date.now());
-    return getPanelType(id);
+    return getPanelType(id, guildId);
 }
 
-function updatePanelType(typeId, updates) {
+function updatePanelType(typeId, updates, guildId, panelId) {
     const db = getDb();
-    const current = db.prepare('SELECT * FROM ticket_panel_types WHERE id = ?').get(typeId);
-    if (!current) return null;
+    if (!getPanel(panelId, guildId)) return null;
+    const current = getPanelType(typeId, guildId);
+    if (!current || current.panel_id !== panelId) return null;
     const merged = { ...current, ...updates };
     // Only stringify when the incoming value is not already a stored JSON string,
     // otherwise partial updates (e.g. changing only support_roles) double-encode
     // questions/support_roles and corrupt them.
     const stringifyIfNotString = (v) => (typeof v === 'string' ? v : JSON.stringify(v || []));
-    db.prepare(`UPDATE ticket_panel_types SET name = ?, emoji = ?, category_id = ?, support_roles = ?, welcome_message = ?, ticket_name_format = ?, questions = ?, sort_order = ? WHERE id = ?`)
+    db.prepare(`UPDATE ticket_panel_types SET name = ?, emoji = ?, category_id = ?, support_roles = ?, welcome_message = ?, ticket_name_format = ?, questions = ?, sort_order = ? WHERE id = ? AND guild_id = ? AND panel_id = ?`)
         .run(merged.name, merged.emoji || '🎫', merged.category_id || null,
             stringifyIfNotString(merged.support_roles),
             merged.welcome_message || '', merged.ticket_name_format || 'ticket-{username}-{number}',
-            stringifyIfNotString(merged.questions), merged.sort_order || 0, typeId);
-    return getPanelType(typeId);
+            stringifyIfNotString(merged.questions), merged.sort_order || 0, typeId, guildId, panelId);
+    return getPanelType(typeId, guildId);
 }
 
-function deletePanelType(typeId) {
+function deletePanelType(typeId, guildId, panelId) {
+    if (!getPanel(panelId, guildId)) return false;
+    return getDb().prepare('DELETE FROM ticket_panel_types WHERE id = ? AND guild_id = ? AND panel_id = ?')
+        .run(typeId, guildId, panelId).changes > 0;
+}
+
+function reorderPanelTypes(panelId, guildId, typeIds) {
+    if (!getPanel(panelId, guildId)) return false;
     const db = getDb();
-    db.prepare('DELETE FROM ticket_panel_types WHERE id = ?').run(typeId);
+    return db.transaction(() => {
+        const allowed = new Set(getPanelTypes(panelId, guildId).map(type => type.id));
+        if (!typeIds.every(id => allowed.has(id))) return false;
+        const update = db.prepare('UPDATE ticket_panel_types SET sort_order = ? WHERE id = ? AND guild_id = ? AND panel_id = ?');
+        typeIds.forEach((id, index) => update.run(index, id, guildId, panelId));
+        return true;
+    })();
 }
 
 // ──────────────────── Parse Helpers ────────────────────
@@ -186,11 +205,11 @@ function parseQuestions(questions) {
 // ──────────────────── Send Panel ────────────────────
 
 async function sendTicketPanel(panelInput, channel) {
-    const panel = typeof panelInput === 'string' ? getPanel(panelInput) : panelInput;
-    if (!panel) return { error: 'Panel not found.' };
-
     const guild = channel.guild;
-    const types = getPanelTypes(panel.id);
+    const panelId = typeof panelInput === 'string' ? panelInput : panelInput?.id;
+    const panel = getPanel(panelId, guild.id);
+    if (!panel) return { error: 'Panel not found.' };
+    const types = getPanelTypes(panel.id, panel.guild_id);
 
     const embed = new EmbedBuilder()
         .setColor(displayColorToInt(panel.color, TICKET_COLORS.open))
@@ -241,7 +260,7 @@ async function sendTicketPanel(panelInput, channel) {
     const msg = await channel.send({ embeds: [embed], components });
 
     // Store panel_message_id so we can update it later
-    updatePanel(panel.id, { channel_id: channel.id, panel_message_id: msg.id });
+    updatePanel(panel.id, { channel_id: channel.id, panel_message_id: msg.id }, guild.id);
 
     return { success: true, messageId: msg.id };
 }
@@ -253,18 +272,18 @@ async function createTicket(guild, creator, panelType, answers) {
     const config = getTicketConfig(guild.id);
 
     // Resolve panel type
-    const type = typeof panelType === 'string' ? getPanelType(panelType) : panelType;
-    if (!type) return { error: 'Ticket type not found.' };
+    const type = typeof panelType === 'string' ? getPanelType(panelType, guild.id) : panelType;
+    if (!type || type.guild_id !== guild.id) return { error: 'Ticket type not found.' };
 
     // Numbering: when the panel has its own counter set (dashboard "Set Count"),
     // use that; otherwise fall back to the global counter. Keep the global
     // counter ahead of any manually-set number so ticket numbers don't collide
     // across panels.
     let ticketNumber;
-    const panelCounter = type.panel_id ? getPanelTicketCounter(type.panel_id) : null;
+    const panelCounter = type.panel_id ? getPanelTicketCounter(type.panel_id, guild.id) : null;
     if (panelCounter && Number.isInteger(panelCounter) && panelCounter > 0) {
         ticketNumber = panelCounter;
-        setPanelTicketCounter(type.panel_id, panelCounter + 1);
+        setPanelTicketCounter(type.panel_id, panelCounter + 1, guild.id);
         if (ticketNumber > (config.ticket_count || 0)) {
             updateTicketConfig(guild.id, { ticket_count: ticketNumber });
         }
@@ -351,6 +370,14 @@ async function createTicket(guild, creator, panelType, answers) {
         .setFooter({ text: guild.name, iconURL: guild.iconURL() })
         .setTimestamp();
 
+    // Ticket SLA (src/ticketSla.js — required lazily because that module reads
+    // this one): stating the promise where the ticket is opened is the only
+    // place the member, the staff and the tracker all see the same number.
+    const sla = getSlaConfig(guild.id);
+    if (sla.enabled && sla.firstResponseMinutes) {
+        welcomeEmbed.addFields({ name: 'First response target', value: sla.firstResponseMinutes + ' min', inline: true });
+    }
+
     // Pin the answers embed to keep it visible (Feature 6 - Ticket Tool style)
     if (answers && Array.isArray(answers) && answers.length > 0) {
         const answersEmbed = new EmbedBuilder()
@@ -393,7 +420,7 @@ async function createTicket(guild, creator, panelType, answers) {
 
 async function showTicketTypeModal(interaction, panel) {
     // Show a select menu for ticket types
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     if (types.length === 0) {
         return interaction.reply({
             content: '❌ This panel has no ticket types configured. Please contact the server staff.',
@@ -480,7 +507,7 @@ async function handleQuestionsSubmit(interaction) {
         return interaction.reply({ content: '❌ This form is not for you.', ephemeral: true });
     }
 
-    const type = getPanelType(typeId);
+    const type = getPanelType(typeId, interaction.guild.id);
     if (!type) {
         return interaction.reply({ content: '❌ This ticket type no longer exists.', ephemeral: true });
     }
@@ -531,7 +558,7 @@ async function isTicketStaff(guild, ticket, actor) {
     if (member.id === guild.ownerId) return true;
     if (member.permissions?.has(PermissionFlagsBits.Administrator) || member.permissions?.has(PermissionFlagsBits.ManageChannels)) return true;
 
-    const type = ticket.panel_type_id ? getPanelType(ticket.panel_type_id) : null;
+    const type = ticket.panel_type_id ? getPanelType(ticket.panel_type_id, guild.id) : null;
     const supportRoleIds = parseSupportRoles(type?.support_roles);
     return supportRoleIds.some(roleId => member.roles?.cache?.has(roleId));
 }
@@ -551,8 +578,15 @@ async function closeTicketById(guild, channel, closer, reason, ticket) {
     const db = getDb();
     const closeReason = reason || 'No reason provided';
 
-    db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ? WHERE id = ?`)
-        .run('closed', closer.id, closer.tag, Date.now(), closeReason, ticket.id);
+    // Conditional close: two presses (or a button plus the inactivity sweeper)
+    // both read 'open' a moment earlier. Only the row that actually transitions
+    // may send the embed, log, DM and transcript, or a ticket gets closed twice.
+    const closed = db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ?
+        WHERE id = ? AND status IN (?, ?)`)
+        .run('closed', closer.id, closer.tag, Date.now(), closeReason, ticket.id, 'open', 'claimed');
+    if (closed.changes === 0) {
+        return { error: 'This ticket is already closed.' };
+    }
 
     try {
         const closeEmbed = new EmbedBuilder()
@@ -564,8 +598,18 @@ async function closeTicketById(guild, channel, closer, reason, ticket) {
         await channel.send({ embeds: [closeEmbed] });
     } catch (err) { logError(err, 'tickets', 'closeEmbed'); }
 
+    // The close log is where a ticket's end state is read, so the two numbers
+    // that describe how it went — how long the member waited for the first
+    // human reply, and how long the ticket was open — belong here.
+    const slaConfig = getSlaConfig(guild.id);
+    const closedAt = Date.now();
+    const firstResponseAt = ticket.first_response_at ? Number(ticket.first_response_at) : null;
     await logTicketAction(guild, '🔒 Ticket Closed', TICKET_COLORS.closed, {
         'Ticket #': '#' + ticket.ticket_number, 'Closed By': String(closer), 'Reason': closeReason,
+        'First Response': slaConfig.enabled
+            ? (firstResponseAt ? formatWait(firstResponseAt - Number(ticket.created_at)) : 'None')
+            : '—',
+        'Open For': slaConfig.enabled ? formatWait(closedAt - Number(ticket.created_at)) : '—',
     }, null);
 
     recordTicketMessage(ticket.id, '0', 'System', null, 'Ticket closed by ' + closer.tag + (reason ? ' — Reason: ' + reason : ''), 1);
@@ -613,7 +657,16 @@ async function claimTicket(guild, channel, claimer) {
         return { error: 'Only support staff can claim tickets.' };
     }
 
-    db.prepare('UPDATE tickets SET status = ?, claimer_id = ? WHERE id = ?').run('claimed', claimer.id, ticket.id);
+    // Two staff can click Claim in the same second; both passed the read above.
+    // The winner is decided by the row itself, so only one claim is announced.
+    const claim = db.prepare('UPDATE tickets SET status = ?, claimer_id = ? WHERE id = ? AND status = ?')
+        .run('claimed', claimer.id, ticket.id, 'open');
+    if (claim.changes === 0) {
+        const current = db.prepare('SELECT status, claimer_id FROM tickets WHERE id = ?').get(ticket.id);
+        if (!current || current.status === 'closed') return { error: 'This ticket is already closed.' };
+        return { error: 'This ticket was already claimed'
+            + (current && current.claimer_id ? ' by <@' + current.claimer_id + '>' : '') + '.' };
+    }
 
     const claimEmbed = new EmbedBuilder()
         .setColor(TICKET_COLORS.claimed).setTitle('✋ Ticket Claimed')
@@ -641,8 +694,17 @@ async function claimTicket(guild, channel, claimer) {
         }
     } catch {}
 
+    // Claiming is staff picking the ticket up, not yet a reply — so it is not a
+    // first response. Showing how long the member has already waited is the
+    // feedback loop that makes the SLA visible while it is still fixable.
+    const slaConfig = getSlaConfig(guild.id);
+    const claimedAt = ticket.first_response_at ? Number(ticket.first_response_at) : Date.now();
     await logTicketAction(guild, '✋ Ticket Claimed', TICKET_COLORS.claimed, {
         'Ticket #': '#' + ticket.ticket_number, 'Claimed By': String(claimer),
+        'Waited': slaConfig.enabled ? formatWait(claimedAt - Number(ticket.created_at)) : '—',
+        'First Response': ticket.first_response_at && slaConfig.enabled
+            ? formatWait(Number(ticket.first_response_at) - Number(ticket.created_at))
+            : 'Not yet',
     }, null);
     recordTicketMessage(ticket.id, '0', 'System', null, 'Ticket claimed by ' + claimer.tag, 1);
 
@@ -697,15 +759,58 @@ function recordTicketMessage(ticketId, authorId, authorTag, authorAvatar, conten
     } catch (err) { logError(err, 'tickets', 'recordMessage'); }
 }
 
+// How much history a transcript snapshots. Discord returns at most 100
+// messages per call, so the old single call silently kept only the tail of a
+// busy ticket — the README promises the whole conversation. Page backwards
+// with `before` until the channel is exhausted, with a hard ceiling so a
+// pathological channel cannot exhaust memory.
+const TRANSCRIPT_PAGE_SIZE = 100;
+const TRANSCRIPT_MAX_MESSAGES = 10000;
+// The stored text is what the dashboard and the log attachment carry, so it is
+// capped too — but never silently: hitting this appends a visible notice.
+const TRANSCRIPT_MAX_CHARS = 5000000;
+
+async function fetchTranscriptMessages(channel) {
+    const messages = [];
+    let before = null;
+    let capped = false;
+    for (;;) {
+        const batch = await channel.messages
+            .fetch(before ? { limit: TRANSCRIPT_PAGE_SIZE, before } : { limit: TRANSCRIPT_PAGE_SIZE })
+            .catch(() => null);
+        if (!batch) {
+            // The very first page failing means no transcript at all; a later
+            // failure keeps the pages already in hand.
+            if (messages.length === 0) return null;
+            break;
+        }
+        const page = typeof batch.values === 'function' ? [...batch.values()] : [];
+        if (page.length === 0) break;
+        messages.push(...page);
+        if (page.length < TRANSCRIPT_PAGE_SIZE) break; // reached the start of the channel
+        before = page[page.length - 1].id; // collections are newest-first
+        if (!before) break;
+        if (messages.length >= TRANSCRIPT_MAX_MESSAGES) {
+            messages.length = TRANSCRIPT_MAX_MESSAGES;
+            // Only claim truncation when the channel provably holds more.
+            const probe = await channel.messages.fetch({ limit: 1, before }).catch(() => null);
+            capped = !!(probe && probe.size > 0);
+            break;
+        }
+    }
+    return { messages, capped };
+}
+
 async function saveTranscript(guild, ticket, channel) {
     try {
         const db = getDb();
-        const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-        if (!messages) return;
+        const fetchedResult = await fetchTranscriptMessages(channel);
+        if (!fetchedResult) return;
+        const { messages: fetched, capped } = fetchedResult;
 
         const insert = db.prepare(`INSERT OR IGNORE INTO ticket_messages (ticket_id, author_id, author_tag, author_avatar, content, is_system, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
         const tx = db.transaction(() => {
-            for (const [, msg] of messages) {
+            for (const msg of fetched) {
                 if (msg.author.bot && !msg.system) continue;
                 const avatar = msg.author.displayAvatarURL({ size: 32 }) || null;
                 insert.run(ticket.id, msg.author.id, msg.author.tag, avatar, msg.content || '', msg.system ? 1 : 0, msg.createdTimestamp || Date.now());
@@ -736,6 +841,11 @@ async function saveTranscript(guild, ticket, channel) {
             } catch {}
         }
 
+        if (capped) {
+            transcriptLines.push('[Channel history truncated at ' + TRANSCRIPT_MAX_MESSAGES
+                + ' messages — the channel holds more than this transcript.]', '');
+        }
+
         const allMsgs = db.prepare('SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY created_at ASC').all(ticket.id);
         for (const m of allMsgs) {
             const time = new Date(m.created_at).toLocaleString();
@@ -744,8 +854,14 @@ async function saveTranscript(guild, ticket, channel) {
         transcriptLines.push('', '═══════════════════════════════════════════');
         transcriptLines.push('  End of transcript — ' + allMsgs.length + ' messages');
 
-        const transcript = transcriptLines.join('\n');
-        db.prepare('UPDATE tickets SET transcript = ? WHERE id = ?').run(transcript.slice(0, 100000), ticket.id);
+        let transcript = transcriptLines.join('\n');
+        if (transcript.length > TRANSCRIPT_MAX_CHARS) {
+            // Never cut the record without saying so.
+            transcript = transcript.slice(0, TRANSCRIPT_MAX_CHARS)
+                + '\n\n[Transcript truncated at ' + TRANSCRIPT_MAX_CHARS + ' characters — '
+                + allMsgs.length + ' messages are stored, open the ticket export for all of them.]';
+        }
+        db.prepare('UPDATE tickets SET transcript = ? WHERE id = ?').run(transcript, ticket.id);
 
         const config = getTicketConfig(guild.id);
         if (config.log_channel_id) {
@@ -774,20 +890,44 @@ async function saveTranscript(guild, ticket, channel) {
 
 // ──────────────────── Logging Helper ────────────────────
 
+// Answers whether the log actually reached a channel. The ticket SLA sweeper
+// (src/ticketSla.js) needs that answer: an alert it could not post must not be
+// marked as sent, or the ticket would never be alerted about again.
 async function logTicketAction(guild, title, color, fields, logChannelId) {
     if (!logChannelId) {
         const config = getTicketConfig(guild.id);
         logChannelId = config.log_channel_id;
     }
-    if (!logChannelId) return;
+    if (!logChannelId) return false;
     try {
         const channel = guild.channels.cache.get(logChannelId);
-        if (!channel) return;
+        if (!channel) return false;
         const embed = new EmbedBuilder().setColor(color).setTitle(title)
             .setFooter({ text: guild.name, iconURL: guild.iconURL() }).setTimestamp();
         for (const [name, value] of Object.entries(fields)) embed.addFields({ name, value: String(value), inline: true });
         await channel.send({ embeds: [embed] });
-    } catch (err) { logError(err, 'tickets', 'logTicketAction'); }
+        return true;
+    } catch (err) { logError(err, 'tickets', 'logTicketAction'); return false; }
+}
+
+// "12 min" / "2h 5m" for the SLA readouts, straight from the shared helper so
+// the ticket channel and the dashboard describe a wait the same way.
+function formatWait(ms) {
+    if (!Number.isFinite(Number(ms)) || Number(ms) < 0) return '—';
+    return formatDuration(Number(ms));
+}
+
+// The SLA thresholds, read without a hard dependency on src/ticketSla.js (that
+// module requires this one, so a top-level import would be a cycle). A failure
+// here degrades to "SLA display off" — it must never stop a ticket being
+// created, claimed or closed.
+function getSlaConfig(guildId) {
+    try {
+        return require('./ticketSla').getTicketSlaConfig(guildId);
+    } catch (err) {
+        logError(err, 'tickets', 'sla_config');
+        return { enabled: false, firstResponseMinutes: null, alertAfterMinutes: null, alertChannelId: null };
+    }
 }
 
 // ──────────────────── Member Leave Check ────────────────────
@@ -802,8 +942,12 @@ async function handleMemberLeave(member) {
         try {
             const channel = member.guild.channels.cache.get(ticket.channel_id);
             if (!channel) continue;
-            db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ? WHERE id = ?`)
-                .run('closed', client.user.id, client.user.tag + ' (Auto)', Date.now(), 'Member left the server', ticket.id);
+            // Same conditional transition as closeTicketById: if the ticket was
+            // closed between the read and here, leave the real reason in place.
+            const auto = db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ?
+                WHERE id = ? AND status IN (?, ?)`)
+                .run('closed', client.user.id, client.user.tag + ' (Auto)', Date.now(), 'Member left the server', ticket.id, 'open', 'claimed');
+            if (auto.changes === 0) continue;
             const embed = new EmbedBuilder().setColor(TICKET_COLORS.closed).setTitle('🔒 Ticket Auto-Closed')
                 .setDescription('**' + member.user.tag + '** has left the server. Ticket automatically closed.').setTimestamp();
             await channel.send({ embeds: [embed] });
@@ -825,8 +969,10 @@ function markTicketChannelDeleted(ticket) {
         const db = getDb();
         const byId = client && client.user ? client.user.id : null;
         const byTag = client && client.user ? client.user.tag + ' (Auto)' : 'System (Auto)';
-        db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ? WHERE id = ?`)
-            .run('closed', byId, byTag, Date.now(), 'Channel deleted', ticket.id);
+        const deleted = db.prepare(`UPDATE tickets SET status = ?, closed_by_id = ?, closed_by_tag = ?, closed_at = ?, closed_reason = ?
+            WHERE id = ? AND status IN (?, ?)`)
+            .run('closed', byId, byTag, Date.now(), 'Channel deleted', ticket.id, 'open', 'claimed');
+        if (deleted.changes === 0) return;
         recordTicketMessage(ticket.id, '0', 'System', null, 'Ticket closed — channel was deleted', 1);
     } catch (err) { logError(err, 'tickets', 'markTicketChannelDeleted'); }
 }
@@ -862,6 +1008,17 @@ function getBlockingOpenTicket(guild, userId) {
         }
     }
     return firstLive;
+}
+
+// One member's ticket history — the member file's view (src/memberFile.js).
+// Unlike getBlockingOpenTicket this only reads: it never marks a deleted
+// channel, because a staff file must not mutate anything it looks at. Guild
+// scoped (idx_tickets_creator covers guild_id + creator_id).
+function getTicketsForUser(guildId, userId, limit = 25) {
+    const db = getDb();
+    const safeLimit = Math.min(limit || 25, 100);
+    return db.prepare('SELECT * FROM tickets WHERE guild_id = ? AND creator_id = ? ORDER BY created_at DESC LIMIT ?')
+        .all(guildId, userId, safeLimit);
 }
 
 // channelDelete event hook — close a ticket if its channel was deleted.
@@ -1078,7 +1235,7 @@ module.exports = {
     getTicketConfig, updateTicketConfig,
     // Panels
     getPanels, getPanel, createPanel, updatePanel, deletePanel, clonePanel,
-    getPanelTypes, getPanelType, createPanelType, updatePanelType, deletePanelType,
+    getPanelTypes, getPanelType, createPanelType, updatePanelType, deletePanelType, reorderPanelTypes,
     getPanelTicketCounter, setPanelTicketCounter,
     parseQuestions, parseSupportRoles,
     // Ticket actions
@@ -1088,11 +1245,11 @@ module.exports = {
     // Panel flow
     sendTicketPanel, showTicketTypeModal, showQuestionsModal, handleQuestionsSubmit,
     // Transcript
-    saveTranscript, recordTicketMessage,
+    saveTranscript, recordTicketMessage, logTicketAction, formatWait,
     // Auto-close
     handleMemberLeave,
     // Deleted-channel cleanup
-    getBlockingOpenTicket, closeDeletedChannelTickets, handleTicketChannelDeleted,
+    getBlockingOpenTicket, getTicketsForUser, closeDeletedChannelTickets, handleTicketChannelDeleted,
     // Feature 1: Ratings
     saveRating, getGuildRatings, getAverageRating,
     // Feature 2: Inactivity

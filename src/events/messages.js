@@ -1,10 +1,12 @@
 const { EmbedBuilder } = require('discord.js');
 const { getGuildConfig } = require('../config');
 const { handlePrefixMessage } = require('../prefixCommands');
+const { handleCustomCommand, handleAutoresponders } = require('../customCommands');
 const { logError } = require('../logError');
 
 const { getDb } = require('../db');
 const { checkMessage } = require('../automod');
+const { noteTicketMessage } = require('../ticketSla');
 
 // ──────────────────── Track message activity for insights ────────────────────
 function trackActivity(guildId, userId, channelId) {
@@ -91,12 +93,31 @@ module.exports = [
             // Auto-mod check (async, non-blocking — runs in background)
             checkMessage(message, message.guild.id).catch((err) => logError(err, 'events', 'messages/automod'));
 
+            // Ticket SLA (src/ticketSla.js): the first reply from anyone other
+            // than the ticket's creator is that ticket's first response. This
+            // runs before the empty-content bail-out below so an attachment-only
+            // reply still counts, and it is one indexed lookup that returns
+            // nothing for the ordinary channels that make up almost every
+            // message. Its own errors are logged and swallowed — a tracker must
+            // never be the reason a message goes unhandled.
+            noteTicketMessage(message);
+
             // Prefix dispatch — cached lookup supports ANY configured prefix
             // (the old hardcoded ; / ! . gate silently broke custom prefixes)
             const content = message.content;
-            if (!content || content.length < 2) return;
+            if (!content) return;
 
-            await handlePrefixMessage(message, getCachedPrefix(message.guild.id));
+            const prefix = getCachedPrefix(message.guild.id);
+            // Order matters and is also the priority: a real command wins over a
+            // server-authored one of the same name, and neither ever fires
+            // alongside an autoresponder (one reply per message, max).
+            let handled = false;
+            if (content.length >= 2) {
+                handled = await handlePrefixMessage(message, prefix)
+                    .catch((err) => { logError(err, 'events', 'messages/prefix'); return false; });
+            }
+            if (!handled) handled = await handleCustomCommand(message, prefix);
+            if (!handled) await handleAutoresponders(message);
         },
     },
     {

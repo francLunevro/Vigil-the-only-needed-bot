@@ -4,11 +4,15 @@
 const { getDb } = require('../../db');
 const {
     getTicketConfig, updateTicketConfig,
-    getPanels, createPanel, updatePanel, deletePanel,
-    getPanelTypes, createPanelType, updatePanelType, deletePanelType,
+    getPanels, createPanel, updatePanel, deletePanel, clonePanel, setPanelTicketCounter,
+    getPanelTypes, createPanelType, updatePanelType, deletePanelType, reorderPanelTypes,
     sendTicketPanel,
 } = require('../../tickets');
 const { getClient } = require('../core');
+const {
+    getTicketSlaConfig, setTicketSlaConfig, validateTicketSlaPatch,
+    getTicketSlaStats, getOpenTicketWaits, slaStateFor,
+} = require('../../ticketSla');
 
 // Legacy rows may store questions/support_roles as a double-encoded JSON string
 // (e.g. '"[]"' or '"[\"a\"]"'). Normalize to a plain array for the frontend.
@@ -47,7 +51,7 @@ function register(app, ctx) {
                 channel_id: p.channel_id,
                 panel_message_id: p.panel_message_id,
                 ticket_counter: p.ticket_counter || 0,
-                types: getPanelTypes(p.id).map(t => ({
+                types: getPanelTypes(p.id, guild.id).map(t => ({
                     id: t.id,
                     name: t.name,
                     emoji: t.emoji,
@@ -60,6 +64,14 @@ function register(app, ctx) {
                 })),
             }));
             const tickets = db.prepare('SELECT * FROM tickets WHERE guild_id = ? ORDER BY created_at DESC LIMIT 50').all(guild.id);
+
+            // Ticket SLA (src/ticketSla.js): the per-guild thresholds, the
+            // response-time statistics and the live open queue. Each ticket also
+            // carries its own wait/state so the list can show it without a
+            // second request.
+            const slaConfig = getTicketSlaConfig(guild.id);
+            const now = Date.now();
+            const slaState = new Map(getOpenTicketWaits(guild.id, { now, limit: 200 }).map((w) => [w.id, w]));
 
             // Get channels and roles for the frontend pickers
             const channels = guild.channels.cache
@@ -79,21 +91,38 @@ function register(app, ctx) {
                     logChannelId: config.log_channel_id,
                 },
                 panels,
-                tickets: tickets.map(t => ({
-                    id: t.id,
-                    ticketNumber: t.ticket_number,
-                    channelId: t.channel_id,
-                    creatorId: t.creator_id,
-                    creatorTag: t.creator_tag,
-                    panelTypeName: t.panel_type_name,
-                    status: t.status,
-                    createdAt: t.created_at,
-                    closedById: t.closed_by_id,
-                    closedByTag: t.closed_by_tag,
-                    closedAt: t.closed_at,
-                    claimerId: t.claimer_id,
-                    closedReason: t.closed_reason,
-                })),
+                tickets: tickets.map(t => {
+                    const state = slaStateFor(t, slaConfig, now);
+                    return {
+                        id: t.id,
+                        ticketNumber: t.ticket_number,
+                        channelId: t.channel_id,
+                        creatorId: t.creator_id,
+                        creatorTag: t.creator_tag,
+                        panelTypeName: t.panel_type_name,
+                        status: t.status,
+                        createdAt: t.created_at,
+                        closedById: t.closed_by_id,
+                        closedByTag: t.closed_by_tag,
+                        closedAt: t.closed_at,
+                        claimerId: t.claimer_id,
+                        closedReason: t.closed_reason,
+                        // Additive: the SLA columns and the state derived from them.
+                        firstResponseAt: t.first_response_at || null,
+                        firstResponseBy: t.first_response_by || null,
+                        slaAlertedAt: t.sla_alerted_at || null,
+                        waitedMs: state.waitedMs,
+                        firstResponseMs: state.responseMs,
+                        slaState: state.state,
+                        slaBreached: state.late,
+                    };
+                }),
+                sla: {
+                    enabled: slaConfig.enabled,
+                    config: slaConfig,
+                    stats: getTicketSlaStats(guild.id, { now }),
+                    waits: [...slaState.values()],
+                },
                 channels,
                 roles,
             });
@@ -109,13 +138,29 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const { enabled, closeOnLeave, logChannelId } = req.body;
+            const { enabled, closeOnLeave, logChannelId, sla } = req.body;
             const updates = {};
             if (enabled !== undefined) updates.enabled = enabled;
             if (closeOnLeave !== undefined) updates.close_on_leave = closeOnLeave;
             if (logChannelId !== undefined) updates.log_channel_id = logChannelId;
             const result = updateTicketConfig(guild.id, updates);
-            res.json({ success: true, config: result });
+
+            // Ticket SLA thresholds. Validated by src/ticketSla.js rather than
+            // here, so the route and every other caller agree on what a valid
+            // threshold is — and an out-of-range value is refused instead of
+            // quietly clamped.
+            let slaConfig = null;
+            if (sla !== undefined) {
+                const checked = validateTicketSlaPatch(sla);
+                if (checked.error) return res.status(400).json({ error: checked.error });
+                slaConfig = setTicketSlaConfig(guild.id, sla);
+            }
+
+            res.json({
+                success: true,
+                config: result,
+                sla: slaConfig || getTicketSlaConfig(guild.id),
+            });
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
@@ -130,11 +175,11 @@ function register(app, ctx) {
         try {
             const { name, color, description, image_url } = req.body;
             const panel = createPanel(guild.id, name || 'New Panel');
-            if (color) updatePanel(panel.id, { color });
-            if (description) updatePanel(panel.id, { description });
-            if (image_url) updatePanel(panel.id, { image_url });
+            if (color) updatePanel(panel.id, { color }, guild.id);
+            if (description) updatePanel(panel.id, { description }, guild.id);
+            if (image_url) updatePanel(panel.id, { image_url }, guild.id);
             // Seed a default ticket type so the panel can open tickets right away
-            const existingTypes = getPanelTypes(panel.id);
+            const existingTypes = getPanelTypes(panel.id, guild.id);
             if (!existingTypes.length) {
                 createPanelType(panel.id, guild.id, 'General Support', '🎫');
             }
@@ -157,7 +202,7 @@ function register(app, ctx) {
             if (color !== undefined) updates.color = color;
             if (description !== undefined) updates.description = description;
             if (image_url !== undefined) updates.image_url = image_url;
-            const panel = updatePanel(req.params.panelId, updates);
+            const panel = updatePanel(req.params.panelId, updates, guild.id);
             if (!panel) return res.status(404).json({ error: 'Panel not found' });
             res.json({ success: true, panel });
         } catch (err) {
@@ -172,7 +217,7 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            deletePanel(req.params.panelId);
+            if (!deletePanel(req.params.panelId, guild.id)) return res.status(404).json({ error: 'Panel not found' });
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -190,7 +235,7 @@ function register(app, ctx) {
             const channel = guild.channels.cache.get(channelId);
             if (!channel) return res.status(400).json({ error: 'Channel not found' });
             const result = await sendTicketPanel(req.params.panelId, channel);
-            if (result.error) return res.status(400).json({ error: result.error });
+            if (result.error) return res.status(result.error === 'Panel not found.' ? 404 : 400).json({ error: result.error });
             res.json({ success: true, messageId: result.messageId });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -206,13 +251,14 @@ function register(app, ctx) {
         try {
             const { name, emoji, category_id, support_roles, welcome_message, ticket_name_format, questions } = req.body;
             const type = createPanelType(req.params.panelId, guild.id, name || 'Support', emoji || '🎫');
+            if (!type) return res.status(404).json({ error: 'Panel not found' });
             const updates = {};
             if (category_id !== undefined) updates.category_id = category_id;
             if (support_roles !== undefined) updates.support_roles = support_roles;
             if (welcome_message !== undefined) updates.welcome_message = welcome_message;
             if (ticket_name_format !== undefined) updates.ticket_name_format = ticket_name_format;
             if (questions !== undefined) updates.questions = questions;
-            if (Object.keys(updates).length > 0) updatePanelType(type.id, updates);
+            if (Object.keys(updates).length > 0) updatePanelType(type.id, updates, guild.id, req.params.panelId);
             res.json({ success: true, type });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -230,14 +276,9 @@ function register(app, ctx) {
         try {
             const { typeIds } = req.body;
             if (!Array.isArray(typeIds)) return res.status(400).json({ error: 'typeIds must be an array' });
-            const db = getDb();
-            const update = db.prepare('UPDATE ticket_panel_types SET sort_order = ? WHERE id = ? AND panel_id = ?');
-            const tx = db.transaction(() => {
-                typeIds.forEach((typeId, index) => {
-                    update.run(index, typeId, req.params.panelId);
-                });
-            });
-            tx();
+            if (!reorderPanelTypes(req.params.panelId, guild.id, typeIds)) {
+                return res.status(404).json({ error: 'Panel or type not found' });
+            }
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -252,7 +293,7 @@ function register(app, ctx) {
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
             const updates = req.body;
-            const type = updatePanelType(req.params.typeId, updates);
+            const type = updatePanelType(req.params.typeId, updates, guild.id, req.params.panelId);
             if (!type) return res.status(404).json({ error: 'Type not found' });
             res.json({ success: true, type });
         } catch (err) {
@@ -267,7 +308,9 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            deletePanelType(req.params.typeId);
+            if (!deletePanelType(req.params.typeId, guild.id, req.params.panelId)) {
+                return res.status(404).json({ error: 'Type not found' });
+            }
             res.json({ success: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -281,10 +324,9 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const { clonePanel, getPanelTypes } = require('../../tickets');
-            const newPanel = clonePanel(req.params.panelId);
+            const newPanel = clonePanel(req.params.panelId, guild.id);
             if (!newPanel) return res.status(404).json({ error: 'Panel not found' });
-            const types = getPanelTypes(newPanel.id);
+            const types = getPanelTypes(newPanel.id, guild.id);
             res.json({ success: true, panel: { ...newPanel, types } });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -301,8 +343,9 @@ function register(app, ctx) {
             if (count === undefined || count < 0 || !Number.isInteger(count)) {
                 return res.status(400).json({ error: 'Count must be a positive integer' });
             }
-            const { setPanelTicketCounter } = require('../../tickets');
-            setPanelTicketCounter(req.params.panelId, count);
+            if (!setPanelTicketCounter(req.params.panelId, count, guild.id)) {
+                return res.status(404).json({ error: 'Panel not found' });
+            }
             res.json({ success: true, count });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -315,13 +358,13 @@ function register(app, ctx) {
         const guild = client.guilds.cache.get(req.params.id);
         if (!guild) return res.status(404).json({ error: 'Server not found' });
         try {
-            const { updatePanel } = require('../../tickets');
             const allowed = ['name', 'color', 'description', 'image_url'];
             const updates = {};
             for (const key of allowed) {
                 if (req.body[key] !== undefined) updates[key] = req.body[key];
             }
-            const result = updatePanel(req.params.panelId, updates);
+            const result = updatePanel(req.params.panelId, updates, guild.id);
+            if (!result) return res.status(404).json({ error: 'Panel not found' });
             res.json({ success: true, panel: result });
         } catch (err) {
             res.status(500).json({ error: err.message });

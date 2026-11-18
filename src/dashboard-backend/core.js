@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
+const { MAX_IMAGE_BYTES } = require('../imageSafety');
 const { getDb } = require('../db');
 const { logError } = require('../logError');
 
@@ -22,6 +23,27 @@ function setDashboardClient(c, password) {
         console.error('[Dashboard] DASHBOARD_PASSWORD is not set! Please set it in your .env file.');
     }
     dashboardPassword = password;
+
+    // The password is an environment variable, so it only changes across a
+    // restart — and persisted sessions would otherwise survive that change.
+    // A fingerprint of the password gives us a durable "the secret changed"
+    // signal: every existing session is dropped once when it differs. First
+    // boot just records the fingerprint.
+    if (!password) return;
+    try {
+        const fingerprint = hashToken(password);
+        const db = getDb();
+        const row = db.prepare('SELECT value FROM bot_config WHERE key = ?').get('dashboard_password_fingerprint');
+        if (row && row.value && row.value !== fingerprint) {
+            db.prepare('DELETE FROM dashboard_sessions').run();
+        }
+        if (!row || row.value !== fingerprint) {
+            db.prepare('INSERT OR REPLACE INTO bot_config (key, value) VALUES (?, ?)')
+                .run('dashboard_password_fingerprint', fingerprint);
+        }
+    } catch (err) {
+        logError(err, 'dashboard', 'password_fingerprint');
+    }
 }
 
 function getClient() {
@@ -192,11 +214,47 @@ function makeSessionHandle(token, row) {
 // Same shape as the Map it replaces: has/get/set/delete/entries are all the
 // callers ever used. Auth reads fail CLOSED — an unverifiable token is never
 // treated as authenticated.
+// The session table holds only a digest of the cookie token. A stolen
+// bot.db therefore yields no usable session cookie — the raw token exists
+// only in the browser. Rows written by older releases still hold the raw
+// value; `findSessionRow` upgrades one in place the first time it is used, so
+// a deploy does not sign everyone out.
+function sessionLookupKey(token) {
+    return hashToken(token);
+}
+
+function findSessionRow(token) {
+    if (!token) return null;
+    const offered = String(token);
+    const db = getDb();
+
+    // Generated tokens are base64url, never 64 hex characters, so a 64-hex
+    // value is already a stored digest (entries/revoke pass one back in).
+    if (TOKEN_HASH_RE.test(offered)) {
+        return db.prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(offered) || null;
+    }
+
+    const legacy = db.prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(offered);
+    if (legacy) {
+        const digest = sessionLookupKey(offered);
+        try {
+            db.prepare('UPDATE dashboard_sessions SET token = ? WHERE token = ?').run(digest, offered);
+        } catch (err) {
+            // A concurrent upgrade already replaced the row; the digest lookup
+            // below still finds it.
+            logError(err, 'dashboard', 'session_upgrade');
+        }
+        return db.prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(digest) || null;
+    }
+
+    return db.prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(sessionLookupKey(offered)) || null;
+}
+
 const sessions = {
     has(token) {
         if (!token) return false;
         try {
-            return !!getDb().prepare('SELECT 1 FROM dashboard_sessions WHERE token = ?').get(token);
+            return !!findSessionRow(token);
         } catch (err) {
             logError(err, 'dashboard', 'session_has');
             return false;
@@ -205,8 +263,8 @@ const sessions = {
     get(token) {
         if (!token) return undefined;
         try {
-            const row = getDb().prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(token);
-            return row ? makeSessionHandle(token, row) : undefined;
+            const row = findSessionRow(token);
+            return row ? makeSessionHandle(row.token, row) : undefined;
         } catch (err) {
             logError(err, 'dashboard', 'session_get');
             return undefined;
@@ -214,18 +272,22 @@ const sessions = {
     },
     set(token, session) {
         try {
-            // A discord session's copy of the dash token is stored as a digest,
-            // never the token itself: otherwise a backup leak would hand over
-            // exactly the long-lived credential that hashing dash_users exists
-            // to deny. Hashing here (rather than at the call site) means it
-            // can't be forgotten. Already-digest values pass through untouched.
+            // Both credentials are digested before they touch disk: the cookie
+            // token (the column key) and a discord session's copy of the dash
+            // access token. Otherwise a backup leak would hand over exactly the
+            // long-lived credentials that hashing exists to deny. Already-digest
+            // values pass through untouched.
             // (hashToken/TOKEN_HASH_RE are defined below, with the other token helpers.)
+            const storedToken = sessionLookupKey(token);
             const accessToken = !session.accessToken ? null
                 : (TOKEN_HASH_RE.test(String(session.accessToken)) ? String(session.accessToken) : hashToken(session.accessToken));
-            getDb().prepare(`INSERT OR REPLACE INTO dashboard_sessions
+            const db = getDb();
+            // Drop a pre-upgrade raw row so the same session cannot exist twice.
+            db.prepare('DELETE FROM dashboard_sessions WHERE token = ? AND token <> ?').run(String(token), storedToken);
+            db.prepare(`INSERT OR REPLACE INTO dashboard_sessions
                 (token, method, user_id, access_token, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?)`).run(
-                token,
+                storedToken,
                 session.method || 'password',
                 session.userId || null,
                 accessToken,
@@ -237,10 +299,22 @@ const sessions = {
         }
     },
     delete(token) {
-        try { getDb().prepare('DELETE FROM dashboard_sessions WHERE token = ?').run(token); }
+        try {
+            const db = getDb();
+            const offered = String(token || '');
+            if (!offered) return;
+            // entries() hands back stored digests; callers elsewhere still hold
+            // the raw cookie value. Try both, without ever accepting a digest
+            // from a request (auth always resolves through findSessionRow).
+            const direct = db.prepare('DELETE FROM dashboard_sessions WHERE token = ?').run(offered);
+            if (direct.changes === 0 && !TOKEN_HASH_RE.test(offered)) {
+                db.prepare('DELETE FROM dashboard_sessions WHERE token = ?').run(sessionLookupKey(offered));
+            }
+        }
         catch (err) { logError(err, 'dashboard', 'session_delete'); }
     },
     // Materialised up front so callers can delete while iterating (removeDashUser does).
+    // Keys are the stored digests; delete() accepts them directly.
     *entries() {
         let rows;
         try {
@@ -251,6 +325,9 @@ const sessions = {
         }
         for (const row of rows) yield [row.token, makeSessionHandle(row.token, row)];
     },
+    // Exposed so routes can derive a public id from a raw cookie without
+    // learning (or storing) the digest themselves.
+    key: sessionLookupKey,
 };
 
 // A handle the dashboard can name a session by without ever being handed the
@@ -278,7 +355,7 @@ function generateSession() {
 function sessionCookieOptions(req) {
     return {
         httpOnly: true,
-        secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+        secure: req.secure,
         sameSite: 'strict',
         path: '/',
         maxAge: SESSION_TTL_MS,
@@ -501,21 +578,9 @@ function isDashUser(userId, accessToken, opts = {}) {
 const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', '..', 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname) || '.jpg';
-        cb(null, 'bg-' + Date.now() + ext);
-    }
-});
 const upload = multer({
-    storage,
-    limits: { fileSize: 10 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-        const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, allowed.includes(ext));
-    }
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_IMAGE_BYTES, files: 1, fields: 0, parts: 2 },
 });
 
 module.exports = {

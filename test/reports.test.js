@@ -12,7 +12,7 @@ process.env.DATA_DIR = tmp;
 process.env.UPLOADS_DIR = path.join(tmp, 'uploads');
 
 const { createDashboard, setDashboardClient } = require('../src/dashboard');
-const { closeDb } = require('../src/db');
+const { closeDb, getDb } = require('../src/db');
 const reports = require('../src/reports');
 
 setDashboardClient({
@@ -81,7 +81,7 @@ test('reports: createReport stores fields and returns a pending report', () => {
 test('reports: getReports filters by status and orders newest first', () => {
     reports.createReport('g1', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'first');
     const older = reports.createReport('g1', 'u1', 'Alice#1234', 'u3', 'Carol#0001', 'second');
-    reports.updateReportStatus(older.id, 'approved', 'Mod#1');
+    reports.updateReportStatus(older.guild_id, older.id, 'approved', 'Mod#1');
     const pending = reports.getReports('g1', 'pending');
     assert.strictEqual(pending.length, 2);
     const approved = reports.getReports('g1', 'approved');
@@ -94,14 +94,15 @@ test('reports: getReports filters by status and orders newest first', () => {
 
 test('reports: updateReportStatus rejects invalid statuses', () => {
     const rep = reports.createReport('g1', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'x');
-    assert.throws(() => reports.updateReportStatus(rep.id, 'nonsense'), /Invalid status/);
+    assert.throws(() => reports.updateReportStatus(rep.guild_id, rep.id, 'nonsense'), /Invalid status/);
 });
 
 test('reports: updateReportStatus records reviewer, note, and case id', () => {
     const rep = reports.createReport('g1', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'x');
-    const ok = reports.updateReportStatus(rep.id, 'approved', 'Mod#1', 'looks bad', 'case-42');
+    getDb().prepare("INSERT INTO mod_cases (id, guild_id, case_number, user_id, moderator_id, moderator_tag, action_type, created_at) VALUES (?, ?, 1, 'target', 'mod', 'Moderator', 'warn', ?)").run('case-42', rep.guild_id, Date.now());
+    const ok = reports.updateReportStatus(rep.guild_id, rep.id, 'approved', 'Mod#1', 'looks bad', 'case-42');
     assert.strictEqual(ok, true);
-    const updated = reports.getReport(rep.id);
+    const updated = reports.getReport(rep.guild_id, rep.id);
     assert.strictEqual(updated.status, 'approved');
     assert.strictEqual(updated.reviewed_by, 'Mod#1');
     assert.strictEqual(updated.review_note, 'looks bad');
@@ -111,16 +112,16 @@ test('reports: updateReportStatus records reviewer, note, and case id', () => {
 
 test('reports: deleteReport removes and reports false for unknown ids', () => {
     const rep = reports.createReport('g1', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'x');
-    assert.strictEqual(reports.deleteReport(rep.id), true);
-    assert.strictEqual(reports.getReport(rep.id), undefined);
-    assert.strictEqual(reports.deleteReport('does-not-exist'), false);
+    assert.strictEqual(reports.deleteReport(rep.guild_id, rep.id), true);
+    assert.strictEqual(reports.getReport(rep.guild_id, rep.id), undefined);
+    assert.strictEqual(reports.deleteReport('g1', 'does-not-exist'), false);
 });
 
 test('reports: getReportCount respects status filter', () => {
     reports.createReport('g2', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'x');
     reports.createReport('g2', 'u1', 'Alice#1234', 'u3', 'Carol#0001', 'y');
     const dismissed = reports.createReport('g2', 'u1', 'Alice#1234', 'u4', 'Dave#9999', 'z');
-    reports.updateReportStatus(dismissed.id, 'dismissed', 'Mod#1');
+    reports.updateReportStatus(dismissed.guild_id, dismissed.id, 'dismissed', 'Mod#1');
     assert.strictEqual(reports.getReportCount('g2'), 3);
     assert.strictEqual(reports.getReportCount('g2', 'pending'), 2);
     assert.strictEqual(reports.getReportCount('g2', 'dismissed'), 1);
@@ -157,9 +158,9 @@ test('reports API: PUT approves a report with review note', async () => {
         headers: { Cookie: cookie },
     });
     assert.strictEqual(res.status, 200);
-    const updated = reports.getReport(rep.id);
+    const updated = reports.getReport(rep.guild_id, rep.id);
     assert.strictEqual(updated.status, 'approved');
-    assert.strictEqual(updated.reviewed_by, 'Mod#1');
+    assert.strictEqual(updated.reviewed_by, process.env.OWNER_ID || 'dashboard');
     assert.strictEqual(updated.review_note, 'action taken');
 });
 
@@ -169,15 +170,16 @@ test('reports API: PUT rejects invalid status', async () => {
         body: { status: 'exploded' },
         headers: { Cookie: cookie },
     });
-    assert.strictEqual(res.status, 500);
-    assert.strictEqual(reports.getReport(rep.id).status, 'pending');
+    assert.strictEqual(res.status, 400);
+    assert.deepStrictEqual(JSON.parse(res.body), { error: 'Invalid status' });
+    assert.strictEqual(reports.getReport(rep.guild_id, rep.id).status, 'pending');
 });
 
 test('reports API: DELETE removes a report', async () => {
     const rep = reports.createReport('g3', 'u1', 'Alice#1234', 'u2', 'Bob#5678', 'bad words');
     const res = await request('DELETE', '/api/server/g3/reports/' + rep.id, { headers: { Cookie: cookie } });
     assert.strictEqual(res.status, 200);
-    assert.strictEqual(reports.getReport(rep.id), undefined);
+    assert.strictEqual(reports.getReport(rep.guild_id, rep.id), undefined);
 });
 
 test('reports API: unknown report returns 404', async () => {

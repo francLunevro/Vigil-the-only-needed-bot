@@ -11,6 +11,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const { isIP } = require('node:net');
 const { logInfo } = require('../logError');
 const core = require('./core');
 
@@ -24,43 +25,28 @@ const parts = [
     require('./parts/08-automod'),
     require('./parts/09-tickets'),
     require('./parts/10-insights'),
+    // The token-authenticated API goes in front of 11-ops: that part owns the
+    // SPA fallback and the central error handler, and both have to stay last.
+    require('./parts/12-public-api'),
     require('./parts/11-ops'),
 ];
 
 function createDashboard() {
     const app = express();
-    // Proxy trust policy. Makes req.ip and req.secure reflect the real client
-    // (X-Forwarded-For / X-Forwarded-Proto) — but only from peers we can trust.
-    //
-    // Default: XFF is honored only when the direct peer is a local address —
-    // loopback (same-host nginx/Caddy, Docker on localhost), link-local, or a
-    // private/ULA range (Railway, Discloud, Docker bridge networks). A bare VPS
-    // sees public peers, so client-supplied XFF is ignored and the per-IP rate
-    // limits can't be bypassed by rotating the header.
-    //
-    // TRUST_PROXY=1  trust XFF unconditionally (dashboard behind a public
-    //                 proxy such as Cloudflare)
-    // TRUST_PROXY=0  never trust XFF (strictest; no proxy at all)
-    const trustProxyEnv = process.env.TRUST_PROXY;
-    const trustProxy = trustProxyEnv === undefined
-        ? ['loopback', 'linklocal', 'uniquelocal']
-        : String(trustProxyEnv) === '1' || String(trustProxyEnv).toLowerCase() === 'true';
+    // Configure only proxy peers that sanitize the forwarding headers.
+    const configured = process.env.TRUST_PROXY?.trim().toLowerCase();
+    const peers = configured?.split(',').map(peer => peer.trim());
+    if (configured && !['0', 'false'].includes(configured) && peers.some(peer => {
+        const [address, prefix, extra] = peer.split('/');
+        const family = isIP(address);
+        return !family || extra !== undefined || (prefix !== undefined &&
+            (!/^\d+$/.test(prefix) || Number(prefix) < 1 || Number(prefix) > (family === 4 ? 32 : 128)));
+    })) {
+        throw new Error('TRUST_PROXY requires explicit proxy IPs or CIDRs. Use 0 for direct access.');
+    }
+    const trustProxy = !configured ? 'loopback'
+        : ['0', 'false'].includes(configured) ? false : peers;
     app.set('trust proxy', trustProxy);
-    // Body limits: 1 MB comfortably covers normal dashboard traffic; the bulk
-    // import endpoint is the one route that legitimately carries an entire
-    // exported database, so it gets its own larger parser instead of raising
-    // the limit for every route.
-    const jsonSmall = express.json({ limit: '1mb' });
-    const jsonLarge = express.json({ limit: '25mb' });
-    const formSmall = express.urlencoded({ extended: true, limit: '1mb' });
-    const formLarge = express.urlencoded({ extended: true, limit: '25mb' });
-    const LARGE_BODY_PATHS = new Set(['/api/import/all']);
-    app.use((req, res, next) => {
-        const path = String(req.path || '').split('?')[0];
-        const isLarge = LARGE_BODY_PATHS.has(path);
-        (isLarge ? jsonLarge : jsonSmall)(req, res, () =>
-            (isLarge ? formLarge : formSmall)(req, res, next));
-    });
 
     // Defense-in-depth CSP. No 'unsafe-inline' in script-src: the frontend
     // dispatches all events through a delegated listener reading data-fn /
@@ -76,13 +62,13 @@ function createDashboard() {
 
     // Request ID + timing for observability
     app.use((req, res, next) => {
-        const requestId = req.headers['x-request-id'] || crypto.randomUUID();
+        const requestId = crypto.randomUUID();
         req.requestId = requestId;
         res.setHeader('X-Request-ID', requestId);
         const start = process.hrtime.bigint();
         res.on('finish', () => {
             const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
-            logInfo(`${req.method} ${req.path} ${res.statusCode} ${durationMs.toFixed(2)}ms`, 'http', { requestId, ip: req.ip, userAgent: req.headers['user-agent'] });
+            logInfo(`${req.method} ${req.baseUrl || ''}${req.path} ${res.statusCode} ${durationMs.toFixed(2)}ms`, 'http', { requestId });
         });
         next();
     });

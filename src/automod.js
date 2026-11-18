@@ -1,7 +1,8 @@
 const { getDb } = require('./db');
 const { sendLog } = require('./logging');
-const { logError } = require('./logError');
+const { logError, logWarn } = require('./logError');
 const { EmbedBuilder } = require('discord.js');
+const { regexIssue, isValidRegex } = require('./regexGuard');
 
 // ──────────────────── Rule Types ────────────────────
 // spam      — X messages in Y seconds
@@ -16,12 +17,16 @@ const FILTER_TYPES = ['words', 'links', 'regex'];
 
 // Regex filters run under the 'words' rule toggle (they're text filters), but
 // they must never be lowercased at add-time — that would destroy patterns like
-// `[A-Z]`. Syntax is validated on add so a bad pattern can't silently never
-// match (and checkMessage guards at match-time as a second line of defense).
-function isValidRegex(pattern) {
-    try { new RegExp(pattern); return true; }
-    catch { return false; }
-}
+// `[A-Z]`.
+//
+// Validation lives in ./regexGuard (single choke point for every regex
+// feature): syntax check PLUS a static catastrophic-backtracking scan PLUS a
+// length cap. A syntactically-valid `(a+)+` runs on every message and can pin
+// the event loop for hours on one crafted message — a bot-wide freeze, not a
+// slow command — so unsafe shapes are rejected before they are ever stored
+// (see addAutoModFilter, the choke point every add path funnels through).
+// isValidRegex is re-exported unchanged in signature so the slash command,
+// the dashboard route and customCommands keep their existing call shape.
 
 const DEFAULT_RULES = {
     spam:      { enabled: false, threshold: 5, time_window: 10, action: 'warn', duration: null },
@@ -31,9 +36,56 @@ const DEFAULT_RULES = {
     caps:      { enabled: false, threshold: 70, time_window: 0, action: 'warn', duration: null },
 };
 
+// ──────────────────── Per-Guild Read Cache ────────────────────
+// The message path reads the rules, the channel settings, the role whitelist
+// and up to three filter lists — five or six SQLite round trips for every
+// message in every guild, for data that only changes when a moderator edits it.
+// Each read is cached per guild and dropped on every write in this module,
+// which is the only writer, so a new filter is enforced on the very next
+// message. The TTL is a backstop for changes made outside the module: a
+// hand-run SQL fix, a restored database file, an import that predates it.
+const CACHE_TTL_MS = 60 * 1000;
+const CACHE_MAX = 500; // entries per map; the oldest is evicted past that
+const rulesCache = new Map();   // guildId -> { value, ts }
+const configCache = new Map();  // guildId -> { value, ts }
+const filtersCache = new Map(); // guildId:filterType -> { value, ts }
+
+function readThrough(map, key, load) {
+    const hit = map.get(key);
+    if (hit && Date.now() - hit.ts < CACHE_TTL_MS) return hit.value;
+    const value = load();
+    if (map.size >= CACHE_MAX) map.delete(map.keys().next().value);
+    map.set(key, { value, ts: Date.now() });
+    return value;
+}
+
+// Drop a guild's cached reads. Called by every mutation below; with no argument
+// it clears everything (a full config import, or a test that writes SQL by
+// hand and needs the message path to see it).
+function invalidateAutoModCache(guildId) {
+    if (guildId === undefined || guildId === null) {
+        rulesCache.clear();
+        configCache.clear();
+        filtersCache.clear();
+        return;
+    }
+    rulesCache.delete(guildId);
+    configCache.delete(guildId);
+    const prefix = guildId + ':';
+    for (const key of filtersCache.keys()) {
+        if (key.startsWith(prefix)) filtersCache.delete(key);
+    }
+}
+
 // ──────────────────── Guild Config (channels + roles) ────────────────────
 
 function getAutoModConfig(guildId) {
+    return readThrough(configCache, guildId, () => loadAutoModConfig(guildId));
+}
+
+// The returned object is shared: treat it as read-only (callers that edit copy
+// it first, e.g. `{ ...cfg }` in the /automod command).
+function loadAutoModConfig(guildId) {
     const db = getDb();
     const row = db.prepare('SELECT * FROM automod_config WHERE guild_id = ?').get(guildId);
     if (!row) {
@@ -59,6 +111,7 @@ function updateAutoModConfig(guildId, updates) {
     const db = getDb();
     db.prepare('INSERT OR REPLACE INTO automod_config (guild_id, included_channels, excluded_channels, whitelisted_roles) VALUES (?, ?, ?, ?)')
         .run(guildId, JSON.stringify(merged.includedChannels), JSON.stringify(merged.excludedChannels), JSON.stringify(merged.whitelistedRoles));
+    invalidateAutoModCache(guildId);
     return merged;
 }
 
@@ -86,6 +139,11 @@ function isRoleWhitelisted(guildId, member) {
 // ──────────────────── Rule Config ────────────────────
 
 function getAutoModRules(guildId) {
+    return readThrough(rulesCache, guildId, () => loadAutoModRules(guildId));
+}
+
+// Shared return value — read-only, same contract as loadAutoModConfig.
+function loadAutoModRules(guildId) {
     const db = getDb();
     const rows = db.prepare('SELECT * FROM automod_rules WHERE guild_id = ?').all(guildId);
     const rules = {};
@@ -113,20 +171,45 @@ function updateAutoModRule(guildId, ruleType, config) {
     if (ruleType === 'spam') threshold = Math.max(1, threshold);
     db.prepare('INSERT OR REPLACE INTO automod_rules (guild_id, rule_type, enabled, threshold, time_window, action, duration) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(guildId, ruleType, config.enabled ? 1 : 0, threshold, config.time_window || 0, config.action || 'warn', config.duration || null);
+    invalidateAutoModCache(guildId);
 }
 
 // ──────────────────── Word Filters ────────────────────
 
 function getAutoModFilters(guildId, filterType) {
-    const db = getDb();
-    return db.prepare('SELECT * FROM automod_filters WHERE guild_id = ? AND filter_type = ?').all(guildId, filterType);
+    // Shared array of shared rows — read-only. Callers only read `pattern` and
+    // `action`; the editing paths copy before they touch anything.
+    return readThrough(filtersCache, guildId + ':' + filterType, () => getDb()
+        .prepare('SELECT * FROM automod_filters WHERE guild_id = ? AND filter_type = ?').all(guildId, filterType));
 }
 
+// The two raw deletes the import path uses, kept together with the invalidation
+// they need — a plain DELETE that skipped it would leave deleted filters live in
+// the cache for up to the TTL.
+function clearAutoModFilters(guildId, filterType) {
+    getDb().prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ?').run(guildId, filterType);
+    invalidateAutoModCache(guildId);
+}
+
+// The single choke point for filter adds. Every entry path (slash command,
+// dashboard route, import, bulk add) funnels through here, so an unsafe regex
+// can be rejected exactly once instead of at each caller. Returns true when
+// stored, false when rejected — callers that pre-validated keep working
+// unchanged; the import/bulk paths treat false as "skip this one".
 function addAutoModFilter(guildId, filterType, pattern, action) {
+    if (filterType === 'regex') {
+        const issue = regexIssue(pattern);
+        if (issue) {
+            logWarn('Rejected unsafe automod regex filter', 'automod', 'guild=' + guildId + ': ' + issue);
+            return false;
+        }
+    }
     const db = getDb();
     const stored = filterType === 'regex' ? pattern : pattern.toLowerCase();
     db.prepare('INSERT OR REPLACE INTO automod_filters (guild_id, filter_type, pattern, action) VALUES (?, ?, ?, ?)')
         .run(guildId, filterType, stored, action || 'delete');
+    invalidateAutoModCache(guildId);
+    return true;
 }
 
 function removeAutoModFilter(guildId, filterType, pattern) {
@@ -136,8 +219,35 @@ function removeAutoModFilter(guildId, filterType, pattern) {
     const stored = filterType === 'regex' ? pattern : pattern.toLowerCase();
     const result = db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ? AND pattern = ?')
         .run(guildId, filterType, stored);
+    if (result.changes > 0) {
+        compiledRegexCache.delete(stored);
+        invalidateAutoModCache(guildId);
+    }
     return result.changes > 0;
 }
+
+// ──────────────────── Compiled Regex Cache ────────────────────
+// `new RegExp(pattern)` used to run on EVERY message for EVERY regex filter —
+// a fresh compile per message on the hottest path in the bot. A compiled
+// RegExp is immutable for a given pattern string, so the compile is pure
+// overhead; cache it. Entries are keyed by pattern, so add/update never
+// produce stale matches; removal drops the entry and the size cap bounds
+// growth from long-gone patterns.
+const compiledRegexCache = new Map();
+const REGEX_CACHE_MAX = 500;
+
+function getCachedRegex(pattern) {
+    let re = compiledRegexCache.get(pattern);
+    if (re !== undefined) return re;
+    try { re = new RegExp(pattern); } catch { re = null; }
+    if (compiledRegexCache.size >= REGEX_CACHE_MAX) compiledRegexCache.clear();
+    compiledRegexCache.set(pattern, re);
+    return re;
+}
+
+// Regex runs against at most this much of the message. Belt-and-braces under
+// the static scan: even a heuristic-passing pattern gets a bounded haystack.
+const REGEX_INPUT_CAP = 500;
 
 // ──────────────────── Spam Tracking (in-memory) ────────────────────
 
@@ -242,14 +352,18 @@ async function checkMessage(message, guildId) {
         }
 
         // ── Regex filter check (same words-rule toggle) ──
+        // Patterns are compile-cached and matched against a bounded slice of
+        // the message; a legacy/invalid stored pattern compiles to null and
+        // is skipped defensively (validated at add-time since the choke
+        // point, but old DBs can still hold junk).
         const regexFilters = getAutoModFilters(guildId, 'regex');
+        const contentSlice = content.slice(0, REGEX_INPUT_CAP);
         for (const f of regexFilters) {
-            try {
-                if (new RegExp(f.pattern).test(content)) {
-                    violations.push({ type: 'regex', rule: { ...rules.words, action: f.action }, reason: 'Regex match: /' + f.pattern + '/' });
-                    break;
-                }
-            } catch { /* stored pattern is invalid — validated at add-time, skip defensively */ }
+            const re = getCachedRegex(f.pattern);
+            if (re && re.test(contentSlice)) {
+                violations.push({ type: 'regex', rule: { ...rules.words, action: f.action }, reason: 'Regex match: /' + f.pattern + '/' });
+                break;
+            }
         }
     }
 
@@ -373,21 +487,26 @@ function importAutoModConfig(guildId, data) {
         if (data.filters) {
             // Clear existing and re-import
             if (Array.isArray(data.filters.words)) {
-                db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ?').run(guildId, 'words');
+                clearAutoModFilters(guildId, 'words');
                 for (const f of data.filters.words) {
                     if (f.pattern) addAutoModFilter(guildId, 'words', f.pattern, f.action || 'delete');
                 }
             }
             if (Array.isArray(data.filters.links)) {
-                db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ?').run(guildId, 'links');
+                clearAutoModFilters(guildId, 'links');
                 for (const f of data.filters.links) {
                     if (f.pattern) addAutoModFilter(guildId, 'links', f.pattern, f.action || 'delete');
                 }
             }
             if (Array.isArray(data.filters.regex)) {
-                db.prepare('DELETE FROM automod_filters WHERE guild_id = ? AND filter_type = ?').run(guildId, 'regex');
                 for (const f of data.filters.regex) {
-                    if (f.pattern && isValidRegex(f.pattern)) addAutoModFilter(guildId, 'regex', f.pattern, f.action || 'delete');
+                    // addAutoModFilter is the safety choke point — it rejects
+                    // invalid AND catastrophic-backtracking patterns (regex
+                    // filters imported from an untrusted export could
+                    // otherwise freeze the bot on the first matching
+                    // message). Rejected patterns are skipped, like invalid
+                    // ones always were.
+                    if (f.pattern) addAutoModFilter(guildId, 'regex', f.pattern, f.action || 'delete');
                 }
             }
         }
@@ -410,13 +529,10 @@ function bulkAddFilters(guildId, filterType, patterns) {
         let pattern = parts[0].trim();
         const action = parts[1]?.trim() || 'delete';
         if (!pattern || !ACTIONS.includes(action)) continue;
-        // Regex patterns keep their case and must be syntactically valid
-        if (filterType === 'regex') {
-            if (!isValidRegex(pattern)) continue;
-        } else {
-            pattern = pattern.toLowerCase();
-        }
-        addAutoModFilter(guildId, filterType, pattern, action);
+        // Regex patterns keep their case and must pass the full safety guard
+        // (syntax + backtracking shape + length) inside addAutoModFilter.
+        if (filterType !== 'regex') pattern = pattern.toLowerCase();
+        if (!addAutoModFilter(guildId, filterType, pattern, action)) continue;
         added.push({ pattern, action });
     }
     return added;
@@ -435,6 +551,8 @@ module.exports = {
     checkMessage,
     getAutoModConfig,
     updateAutoModConfig,
+    invalidateAutoModCache,
+    clearAutoModFilters,
     exportAutoModConfig,
     importAutoModConfig,
     bulkAddFilters,

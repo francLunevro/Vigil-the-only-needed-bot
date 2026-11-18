@@ -6,7 +6,7 @@ import globals from 'globals';
 // Warnings = style/cleanliness nudges — visible locally, never red in CI.
 export default [
     {
-        ignores: ['node_modules/**', 'data/**', 'uploads/**', '.git/**', '.utim_tmp/**'],
+        ignores: ['node_modules/**', 'data/**', 'uploads/**', '.git/**', '.utim_tmp/**', 'web/dist/**'],
     },
     {
         files: ['index.js', 'src/**/*.js', 'test/**/*.js'],
@@ -54,6 +54,24 @@ export default [
             'no-constant-condition': 'off',
             'no-empty': 'off',
             'no-undef': ['error', { typeof: true }],
+        },
+    },
+    // The React dashboard compiles from JSX with the automatic runtime, so
+    // `React` need not be imported. no-undef stays on with browser globals.
+    {
+        files: ['web/src/**/*.{js,jsx}'],
+        languageOptions: {
+            ecmaVersion: 2022,
+            sourceType: 'module',
+            globals: globals.browser,
+            parserOptions: { ecmaFeatures: { jsx: true } },
+        },
+        rules: {
+            'no-undef': 'error',
+            'no-unused-vars': ['warn', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
+            'prefer-const': 'warn',
+            'no-var': 'warn',
+            eqeqeq: 'warn',
         },
     },
     // ── Silent-promise-failure guard ──

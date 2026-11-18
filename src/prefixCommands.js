@@ -168,10 +168,15 @@ handlers.serverstats = async (message) => {
         if (channel.isThread && channel.isThread()) return message.reply('⚠️ Threads can\'t hold a counter — pick a voice or text channel.');
         const res = ss.setServerStat(gid, channel.id, type, label);
         if (res.error) return message.reply('❌ ' + res.error);
-        try { await ss.refreshGuildStats(message.guild); } catch {}
+        // Discord caps channel renames at ~2 per 10 minutes; a rename that hit
+        // that limit is queued, so don't promise the name is already live.
+        const refresh = await ss.refreshGuildStats(message.guild).catch(() => ({ renamed: [], deferred: [] }));
         const value = ss.computeStat(message.guild, message.guild.members, type);
+        const applied = (refresh.renamed || []).includes(channel.id)
+            ? 'now named **' + ss.formatStatName(type, value, label) + '**'
+            : 'queued to be named **' + ss.formatStatName(type, value, label) + '** once Discord\'s rename limit clears (~2 per 10 minutes)';
         const note = type === 'online' && value === 0 ? '\nℹ️ The **online** counter needs the **Presence Intent** enabled in the Discord Developer Portal to show live numbers.' : '';
-        return message.reply('✅ Counter set on <#' + channel.id + '> — now named **' + ss.formatStatName(type, value, label) + '**' + note);
+        return message.reply('✅ Counter set on <#' + channel.id + '> — ' + applied + note);
     }
 
     if (sub === 'remove') {
@@ -351,7 +356,7 @@ handlers.tempvc = async (message) => {
         const sLines = [];
         for (const s of spawned) {
             const ch = guild.channels.cache.get(s.channel_id);
-            if (!ch) { tv.removeSpawned(s.channel_id); continue; }
+            if (!ch) continue;
             const owner = guild.members.cache.get(s.owner_id);
             sLines.push('• <#' + s.channel_id + '> → ' + (owner ? String(owner.user) : '`' + s.owner_id + '`') + (ch.members && ch.members.size ? ' (' + ch.members.size + ' in it)' : ' (empty)'));
         }
@@ -399,19 +404,8 @@ handlers.tempvc = async (message) => {
         }
         const locked = sub === 'lock';
         try {
-            const everyone = guild.roles.everyone;
-            if (locked) {
-                await channel.permissionOverwrites.edit(everyone, { Connect: false }, 'Temp VC locked');
-                await channel.permissionOverwrites.edit(message.member, { Connect: true }, 'Temp VC owner');
-                tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
-                return message.reply('🔒 Channel locked — only you can join now.');
-            }
-            const eow = channel.permissionOverwrites.cache.get(everyone.id);
-            if (eow && eow.deny.has(PermissionFlagsBits.Connect)) await channel.permissionOverwrites.delete(everyone, 'Temp VC unlocked');
-            const mow = channel.permissionOverwrites.cache.get(message.member.id);
-            if (mow && mow.allow.has(PermissionFlagsBits.Connect)) await channel.permissionOverwrites.delete(message.member, 'Temp VC unlocked');
-            tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
-            return message.reply('🔓 Channel unlocked — everyone can join.');
+            await tv.setChannelLocked(channel, guild, message.member, locked);
+            return message.reply(locked ? '🔒 Channel locked — only you can join now.' : '🔓 Channel unlocked — everyone can join.');
         } catch (err) { return message.reply('❌ Failed to ' + sub + ': ' + (err.message || err)); }
     }
 
@@ -419,14 +413,15 @@ handlers.tempvc = async (message) => {
         const vcId = message.member.voice && message.member.voice.channelId;
         if (!vcId) return message.reply('⚠️ You need to be inside a temp voice channel to claim it.');
         const row = tv.getSpawnedChannel(vcId);
-        if (!row) return message.reply('⚠️ This isn\'t a temp voice channel.');
+        if (!row || row.guild_id !== guild.id) return message.reply('⚠️ This isn\'t a temp voice channel.');
         const claimChannel = guild.channels.cache.get(vcId);
         // channel.members is authoritative for who is in the VC (the members
         // cache can miss the owner on large servers).
         if (claimChannel && claimChannel.members && claimChannel.members.has(row.owner_id)) {
             return message.reply('⚠️ The owner is still here — no need to claim.');
         }
-        tv.addSpawned(vcId, guild.id, message.author.id, row.trigger_id);
+        const saved = tv.addSpawned(vcId, guild.id, message.author.id, row.trigger_id);
+        if (saved.error) return message.reply('❌ ' + saved.error);
         tv.cancelDeletion(vcId);
         tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         return message.reply('👑 You now own this channel.');

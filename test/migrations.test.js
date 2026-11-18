@@ -28,6 +28,7 @@ test('fresh database: every migration is applied and recorded', () => {
     assert.ok(applied.length >= 30, 'all migrations recorded, got ' + applied.length);
     assert.ok(applied.includes('0001_guild_config_prefix'));
     assert.ok(applied.includes('0030_activity_counts_last_seen'));
+    assert.ok(applied.includes('0042_guild_config_mod_dm'));
 
     // Spot-check the columns the migrations own
     assert.ok(columns('guild_config').includes('prefix'));
@@ -40,6 +41,7 @@ test('fresh database: every migration is applied and recorded', () => {
     assert.ok(columns('giveaways').includes('required_role_ids'));
     assert.ok(columns('ban_appeals').includes('review_note'));
     assert.ok(columns('activity_counts').includes('last_seen'));
+    assert.ok(columns('guild_config').includes('mod_dm_config'));
 
     // The dash_user_guilds table exists with its scope index
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(r => r.name);
@@ -62,6 +64,29 @@ test('reopen: migrations are not re-applied', () => {
     // applied_at timestamps were not rewritten (rows untouched)
     const newest = db2.prepare('SELECT MAX(applied_at) AS t FROM schema_migrations').get().t;
     assert.ok(newest <= Date.now());
+});
+
+test('upgrade path: mod-dm column is added to a database that predates it', () => {
+    // A guild_config table from before 0042: no mod_dm_config column, and no
+    // record of the migration. Existing rows must survive the upgrade, and a
+    // re-run against the already-correct schema must not crash.
+    const db = getDb();
+    db.prepare("INSERT INTO guild_config (guild_id, prefix) VALUES ('upgrade1', '!')").run();
+    db.exec('ALTER TABLE guild_config DROP COLUMN mod_dm_config');
+    db.prepare("DELETE FROM schema_migrations WHERE name = '0042_guild_config_mod_dm'").run();
+    assert.ok(!columns('guild_config').includes('mod_dm_config'), 'column really dropped');
+
+    closeDb();
+    const db2 = getDb();
+
+    assert.ok(columns('guild_config').includes('mod_dm_config'));
+    const recorded = db2.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE name = '0042_guild_config_mod_dm'").get().n;
+    assert.strictEqual(recorded, 1);
+
+    // The pre-existing row kept its values and received the column default.
+    const kept = db2.prepare("SELECT prefix, mod_dm_config FROM guild_config WHERE guild_id = 'upgrade1'").get();
+    assert.strictEqual(kept.prefix, '!');
+    assert.strictEqual(kept.mod_dm_config, '{}');
 });
 
 test('legacy database: missing schema_migrations rows self-heal via column checks', () => {

@@ -4,7 +4,28 @@ const { getWelcomeConfig, getGoodbyeConfig } = require('../config');
 const { buildGreetingEmbed } = require('../commands/greetings');
 const { replacePlaceholders } = require('../helpers');
 const { handleRaidModeJoin } = require('../raidMode');
+const { restoreTempRolesForMember } = require('../tempRoles');
 const { modActionLogEmbed, membershipField } = require('../logging');
+const { logActivity } = require('../botActivity');
+
+// One activity row per join/leave (the table the dashboard feed and timeline
+// read), plus an SSE nudge so those views update without waiting for a poll.
+// Bots are excluded here for the same reason the join counters exclude them:
+// application traffic is noise in a member-activity feed.
+function recordMemberActivity(type, member) {
+    const guildId = member.guild.id;
+    logActivity(type, {
+        guildId,
+        guildName: member.guild.name,
+        userId: member.user.id,
+        userTag: member.user.tag,
+    });
+    try {
+        if (global.broadcastDashboard) {
+            global.broadcastDashboard(type, { guildId, userId: member.user.id });
+        }
+    } catch { /* the dashboard is optional */ }
+}
 
 // ─── Send custom welcome/goodbye message ───
 
@@ -34,13 +55,20 @@ async function sendGreeting(member, type) {
             execute: (deps) => async (member) => {
                 const isBot = member.user.bot;
                 
-                if (!isBot) deps.recordJoin(member.guild.id);
+                if (!isBot) {
+                    deps.recordJoin(member.guild.id);
+                    recordMemberActivity('member_join', member);
+                }
 
                 // ── Send welcome message ──
                 if (!isBot) {
                     await sendGreeting(member, 'welcome');
                     // ── Raid mode: lockdown new joins ──
                     await handleRaidModeJoin(member);
+                    // ── Temporary roles survive a leave/rejoin: roles are
+                    // dropped on leave, so anything still in date comes back.
+                    await restoreTempRolesForMember(member)
+                        .catch((err) => logError(err, 'events', 'guildMemberAdd/temp_roles'));
                 }
 
                 const daysSinceCreation = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000);
@@ -154,6 +182,7 @@ async function sendGreeting(member, type) {
                 if (member.user.bot) return;
 
                 deps.recordLeave(member.guild.id);
+                recordMemberActivity('member_leave', member);
 
                 // ── Send goodbye message ──
                 await sendGreeting(member, 'goodbye');

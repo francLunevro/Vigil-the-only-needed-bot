@@ -362,6 +362,187 @@ function PanelModal({ panel, onClose, onSaved, serverId }) {
     );
 }
 
+// ──────────────────── Ticket SLA ────────────────────
+// Response-time tracking (src/ticketSla.js). Three pieces, all fed by the same
+// route the rest of this screen already reads:
+//   • the thresholds, written back through the same ticket config route
+//   • the statistics for the window the server returned
+//   • a per-ticket badge in the recent list
+// The two presentational ones are exported so they can be rendered directly in
+// a test, without a server or a fetch.
+
+const SLA_LABEL = { waiting: 'Waiting', overdue: 'Overdue', met: 'On time', late: 'Late' };
+const SLA_TONE = { waiting: 'default', overdue: 'bad', met: 'good', late: 'warn' };
+
+// "45m" / "2h 5m" / "1d 3h" — the same compact shape the bot's formatDuration
+// produces for the ticket embeds, so a wait reads identically in both places.
+function durationLabel(ms) {
+    if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return '—';
+    const secs = Math.max(0, Math.floor(Number(ms) / 1000));
+    const days = Math.floor(secs / 86400);
+    const hours = Math.floor((secs % 86400) / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    if (days > 0) return days + 'd ' + hours + 'h';
+    if (hours > 0) return hours + 'h ' + mins + 'm';
+    if (mins > 0) return mins + 'm';
+    return secs + 's';
+}
+
+export function SlaBadge({ state }) {
+    if (!state) return null;
+    return <Badge tone={SLA_TONE[state] || 'default'}>{SLA_LABEL[state] || state}</Badge>;
+}
+
+// Pure: takes the `sla` payload the route returns and renders it.
+export function SlaOverview({ sla }) {
+    if (!sla) {
+        return <p className="hint">This server did not return SLA data. Reload the page; check the Errors screen if it persists.</p>;
+    }
+    if (!sla.enabled) {
+        return <p className="hint">Response-time tracking is off for this server. Turn it on to start recording first-response times.</p>;
+    }
+
+    const stats = sla.stats || {};
+    const responded = stats.responded || {};
+    const open = stats.open || {};
+    const breaches = stats.breaches || {};
+    const waits = sla.waits || [];
+    const target = stats.targetMs ? durationLabel(stats.targetMs) : 'no target';
+
+    return (
+        <>
+            <div className="kv-grid">
+                <div className="kv"><span>Target</span><strong>{target}</strong></div>
+                <div className="kv"><span>Answered</span><strong>{num(responded.count || 0)}</strong></div>
+                <div className="kv"><span>Average response</span><strong>{durationLabel(responded.averageMs)}</strong></div>
+                <div className="kv"><span>Median response</span><strong>{durationLabel(responded.medianMs)}</strong></div>
+                <div className="kv"><span>Answered in target</span><strong>{num(responded.withinTarget || 0)}</strong></div>
+                <div className="kv"><span>Breaches</span><strong>{num(breaches.total || 0)}</strong></div>
+                <div className="kv"><span>Waiting now</span><strong>{num(open.waiting || 0)}</strong></div>
+                <div className="kv"><span>Overdue now</span><strong>{num(open.overdue || 0)}</strong></div>
+                <div className="kv"><span>Oldest open</span><strong>{durationLabel(open.oldestWaitMs)}</strong></div>
+            </div>
+
+            <p className="hint">
+                Last {num(stats.windowDays || 0)} days · alert after{' '}
+                {stats.alertAfterMs ? durationLabel(stats.alertAfterMs) : 'never'} ·{' '}
+                {num(breaches.respondedLate || 0)} answered late, {num(breaches.openOverdue || 0)} still unanswered past the target.
+            </p>
+
+            {waits.length === 0
+                ? <p className="hint">No ticket is waiting for a first response right now.</p>
+                : (
+                    <div className="rows mt">
+                        {waits.map((w) => (
+                            <div className="dist" key={w.id}>
+                                <div style={{ minWidth: 0 }}>
+                                    <strong>#{w.ticketNumber} {w.creatorTag || 'Unknown'}</strong>
+                                    {w.panelTypeName ? <span className="hint"> · {w.panelTypeName}</span> : null}
+                                    <div className="hint">
+                                        waiting {durationLabel(w.waitedMs)}
+                                        {w.claimerId ? ' · claimed' : ''}
+                                    </div>
+                                </div>
+                                <SlaBadge state={w.state} />
+                            </div>
+                        ))}
+                    </div>
+                )}
+        </>
+    );
+}
+
+function SlaSettingsCard({ serverId, sla, channels, onSaved }) {
+    const toast = useToast();
+    const cfg = sla || {};
+    const [enabled, setEnabled] = useState(cfg.enabled !== false);
+    const [target, setTarget] = useState(cfg.firstResponseMinutes === null || cfg.firstResponseMinutes === undefined ? '' : String(cfg.firstResponseMinutes));
+    const [alertAfter, setAlertAfter] = useState(cfg.alertAfterMinutes === null || cfg.alertAfterMinutes === undefined ? '' : String(cfg.alertAfterMinutes));
+    const [alertChannel, setAlertChannel] = useState(cfg.alertChannelId || '');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+
+    // Re-seed when the server changes or the stored config comes back different
+    // (a save followed by a reload is exactly that).
+    useEffect(() => {
+        setEnabled(cfg.enabled !== false);
+        setTarget(cfg.firstResponseMinutes === null || cfg.firstResponseMinutes === undefined ? '' : String(cfg.firstResponseMinutes));
+        setAlertAfter(cfg.alertAfterMinutes === null || cfg.alertAfterMinutes === undefined ? '' : String(cfg.alertAfterMinutes));
+        setAlertChannel(cfg.alertChannelId || '');
+        setError(null);
+    }, [serverId, cfg.enabled, cfg.firstResponseMinutes, cfg.alertAfterMinutes, cfg.alertChannelId]);
+
+    async function save() {
+        setBusy(true);
+        setError(null);
+        try {
+            // Blank means "no target" / "never alert", which the API takes as
+            // null. Anything that isn't a whole number is left for the server's
+            // validator to refuse, so the message the user sees is the one rule
+            // every caller is held to.
+            await api.post('/api/server/' + serverId + '/tickets/config', {
+                sla: {
+                    enabled,
+                    firstResponseMinutes: target.trim() === '' ? null : Number(target),
+                    alertAfterMinutes: alertAfter.trim() === '' ? null : Number(alertAfter),
+                    alertChannelId: alertChannel || null,
+                },
+            });
+            toast('Response targets saved');
+            if (onSaved) onSaved();
+        } catch (err) {
+            setError(err.message || 'Could not save response targets');
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const textChannels = (channels || []).filter((c) => c.type === 0 || c.type === 5);
+
+    return (
+        <Card title="Response targets (SLA)" icon="pulse">
+            <div className="dist">
+                <div>
+                    <div>Track first-response times</div>
+                    <span className="hint">Record when staff first answer each ticket</span>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+                    <Badge tone={enabled ? 'good' : 'default'}>{enabled ? 'On' : 'Off'}</Badge>
+                </label>
+            </div>
+
+            <div className="field-block">
+                <label>First response target (minutes)</label>
+                <Input type="number" min="1" placeholder="60" value={target}
+                    onChange={(e) => setTarget(e.target.value)} />
+                <p className="hint">Counting starts when the ticket opens. Leave blank for no target — times are still recorded and shown.</p>
+            </div>
+
+            <div className="field-block">
+                <label>Alert staff after (minutes)</label>
+                <Input type="number" min="1" placeholder="120" value={alertAfter}
+                    onChange={(e) => setAlertAfter(e.target.value)} />
+                <p className="hint">A ticket that is still unanswered after this long is posted to the alert channel, once.</p>
+            </div>
+
+            <div className="field-block">
+                <label>Alert channel</label>
+                <Select value={alertChannel} onChange={(e) => setAlertChannel(e.target.value)}>
+                    <option value="">Ticket log channel</option>
+                    {textChannels.map((c) => <option key={c.id} value={c.id}>#{c.name}</option>)}
+                </Select>
+            </div>
+
+            {error && <p className="result result-bad" role="alert">{error}</p>}
+
+            <div className="row-actions mt">
+                <Button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save response targets'}</Button>
+            </div>
+        </Card>
+    );
+}
+
 // ──────────────────── Main screen ────────────────────
 export default function Tickets() {
     const { data: servers } = useServers();
@@ -499,6 +680,10 @@ export default function Tickets() {
                     </Card>
 
                     <div className="mt">
+                        <SlaSettingsCard serverId={serverId} sla={data.sla && data.sla.config} channels={channels} onSaved={reload} />
+                    </div>
+
+                    <div className="mt">
                         <Card title="Advanced settings" icon="wrench">
                             <div className="dist">
                                 <div>
@@ -614,15 +799,35 @@ export default function Tickets() {
                                         <div style={{ minWidth: 0 }}>
                                             <strong>#{t.ticketNumber} {t.creatorTag || 'Unknown'}</strong>
                                             {t.panelTypeName ? <span className="hint"> · {t.panelTypeName}</span> : null}
+                                            {t.status !== 'closed' && (
+                                                <div className="hint">
+                                                    waiting {durationLabel(t.waitedMs)}
+                                                    {t.slaBreached ? ' · past the target' : ''}
+                                                    {!t.slaBreached && t.firstResponseAt ? ' · answered ' + durationLabel(t.firstResponseMs) + ' after opening' : ''}
+                                                </div>
+                                            )}
                                             {t.status === 'closed' && t.closedAt && (
                                                 <div className="hint">closed {timeAgo(t.closedAt)}{t.closedByTag ? ' by ' + t.closedByTag : ''}{t.closedReason ? ' · ' + t.closedReason : ''}</div>
                                             )}
+                                            {t.status === 'closed' && t.firstResponseAt && (
+                                                <div className="hint">first response {durationLabel(t.firstResponseMs)} after opening</div>
+                                            )}
                                         </div>
-                                        <Badge tone={t.status === 'open' ? 'good' : t.status === 'claimed' ? 'warn' : 'default'}>{STATUS_LABEL[t.status] || t.status}</Badge>
+                                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            {t.status !== 'closed' && <SlaBadge state={t.slaState} />}
+                                            <Badge tone={t.status === 'open' ? 'good' : t.status === 'claimed' ? 'warn' : 'default'}>{STATUS_LABEL[t.status] || t.status}</Badge>
+                                        </span>
                                     </div>
                                 ))}
                             </div>
                         )}
+                </Card>
+            </div>
+
+            {/* Response times (SLA) */}
+            <div className="mt">
+                <Card title="Response times" icon="chart">
+                    <SlaOverview sla={data.sla} />
                 </Card>
             </div>
 

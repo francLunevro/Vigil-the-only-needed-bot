@@ -247,8 +247,37 @@ test('automod: invalid stored regex cannot crash the message pipeline', async ()
     const { getDb } = require('../src/db');
     getDb().prepare('INSERT OR REPLACE INTO automod_filters (guild_id, filter_type, pattern, action) VALUES (?, ?, ?, ?)')
         .run('gr4', 'regex', '(', 'delete');
+    am.invalidateAutoModCache('gr4'); // a raw write is not seen until the cache is dropped
     const hit = await am.checkMessage(makeMessage({ content: 'anything at all' }), 'gr4');
     assert.strictEqual(hit, false);
+});
+
+test('automod: reads are cached per guild, and a raw SQL change needs the cache dropped', async () => {
+    // The message path used to do five or six SQLite round trips per message.
+    // The cache is only safe because every write in the module drops it — this
+    // pins both halves of that bargain.
+    enableRule('gc1', 'words');
+    am.addAutoModFilter('gc1', 'words', 'cachedword', 'delete');
+    assert.strictEqual(await am.checkMessage(makeMessage({ content: 'say cachedword' }), 'gc1'), true);
+
+    // Change the database behind the module's back, the way a hand-run SQL fix
+    // or a restored database file would.
+    const { getDb } = require('../src/db');
+    getDb().prepare('DELETE FROM automod_filters WHERE guild_id = ?').run('gc1');
+    assert.strictEqual(await am.checkMessage(makeMessage({ content: 'say cachedword' }), 'gc1'), true,
+        'still served from the cache');
+
+    am.invalidateAutoModCache('gc1');
+    assert.strictEqual(await am.checkMessage(makeMessage({ content: 'say cachedword' }), 'gc1'), false,
+        'and gone the moment the cache is dropped');
+
+    // The module's own writes never need that manual step.
+    am.addAutoModFilter('gc1', 'words', 'freshword', 'delete');
+    assert.strictEqual(await am.checkMessage(makeMessage({ content: 'say freshword' }), 'gc1'), true,
+        'a filter added through the API is live on the next message');
+    assert.strictEqual(am.removeAutoModFilter('gc1', 'words', 'freshword'), true);
+    assert.strictEqual(await am.checkMessage(makeMessage({ content: 'say freshword' }), 'gc1'), false,
+        'and removal is live too');
 });
 
 test('automod: regex filters round-trip through export/import', async () => {

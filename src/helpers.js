@@ -4,15 +4,29 @@ const { escapeMarkdown } = require('discord.js');
 
 // ──────────────────── Input Sanitization ────────────────────
 
+// Slice to at most `max` characters without splitting a surrogate pair in half
+// (half of an emoji renders as a replacement character).
+function safeSlice(str, max) {
+    if (max <= 0) return '';
+    let out = str.slice(0, max);
+    const last = out.charCodeAt(out.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1);
+    return out;
+}
+
 // Sanitize user input for safe embedding in Discord embeds
 // Removes markdown that could be abused, escapes mentions, limits length
+// The result is guaranteed to be at most maxLen characters: Discord rejects
+// embed field values longer than 1024, so the ellipsis is budgeted *within*
+// maxLen rather than appended past it.
 function sanitizeForEmbed(str, maxLen = 1024) {
     if (!str) return '*Empty*';
     const cleaned = escapeMarkdown(String(str))
         .replace(/@(everyone|here)/g, '@\u200b$1') // Zero-width space to prevent pings
-        .replace(/<@!?&?\d+>/g, '') // Remove raw mention strings
-        .slice(0, maxLen);
-    return cleaned.length < String(str).length ? cleaned + '…' : cleaned;
+        .replace(/<@!?&?\d+>/g, ''); // Remove raw mention strings
+    if (cleaned.length <= maxLen) return cleaned;
+    if (maxLen <= 1) return safeSlice(cleaned, Math.max(maxLen, 0));
+    return safeSlice(cleaned, maxLen - 1) + '…';
 }
 
 // Sanitize user input for DMs (stricter, no markdown rendering)

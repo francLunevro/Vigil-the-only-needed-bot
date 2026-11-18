@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
-const { RULE_TYPES, getAutoModRules, updateAutoModRule, getAutoModFilters, addAutoModFilter, removeAutoModFilter, isValidRegex } = require('../automod');
+const { RULE_TYPES, getAutoModRules, updateAutoModRule, getAutoModFilters, addAutoModFilter, removeAutoModFilter } = require('../automod');
+const { regexIssue } = require('../regexGuard');
 
 async function executeAutoMod(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -91,10 +92,18 @@ async function executeAutoMod(interaction) {
             await interaction.reply({ embeds: [embed], ephemeral: true });
         } else {
             const action = interaction.options.getString('action') || 'delete';
-            if (filterType === 'regex' && !isValidRegex(pattern)) {
-                return interaction.reply({ content: '⚠️ `' + pattern + '` is not a valid regular expression. Check your syntax (e.g. `discord\\.gg`, `[A-Z]{5,}`).', ephemeral: true });
+            // Validate through the same guard the choke point uses, so the
+            // user gets the specific reason (syntax vs backtracking shape vs
+            // length) before anything touches the DB.
+            if (filterType === 'regex') {
+                const issue = regexIssue(pattern);
+                if (issue) {
+                    return interaction.reply({ content: '⚠️ `' + pattern + '` was rejected: ' + issue, ephemeral: true });
+                }
             }
-            addAutoModFilter(guild.id, filterType, pattern, action);
+            if (!addAutoModFilter(guild.id, filterType, pattern, action)) {
+                return interaction.reply({ content: '⚠️ `' + pattern + '` was rejected as an unsafe or invalid regular expression.', ephemeral: true });
+            }
             const embed = new EmbedBuilder()
                 .setColor('Green')
                 .setTitle('✅ Filter Added')

@@ -74,7 +74,8 @@ function tokenFrom(res) {
 }
 
 function sessionRow(token) {
-    return getDb().prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(token);
+    // Rows are keyed by the digest of the cookie token, never the raw value.
+    return getDb().prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(hashToken(token));
 }
 
 function dashUserRow(userId) {
@@ -95,10 +96,19 @@ test('a session row stores the token digest, never the raw token', async () => {
     const login = await loginWith('digest-user', accessToken);
     assert.strictEqual(login.status, 200);
 
-    const row = sessionRow(tokenFrom(login));
+    const rawSessionToken = tokenFrom(login);
+    const row = sessionRow(rawSessionToken);
+    assert.ok(row, 'the session row must exist under the digest of its cookie');
+    assert.strictEqual(row.token, hashToken(rawSessionToken), 'the cookie token itself must be hashed at rest');
+    assert.notStrictEqual(row.token, rawSessionToken, 'the raw session token must not be on disk');
     assert.strictEqual(row.access_token, hashToken(accessToken), 'the session must hold the digest');
-    assert.notStrictEqual(row.access_token, accessToken, 'the raw token must not be on disk');
+    assert.notStrictEqual(row.access_token, accessToken, 'the raw access token must not be on disk');
     assert.strictEqual(dashUserRow('digest-user').access_token, hashToken(accessToken));
+
+    // Nothing anywhere in the row may be usable as the cookie credential.
+    const raw = JSON.stringify(row);
+    assert.ok(!raw.includes(rawSessionToken), 'no column may echo the session cookie');
+    assert.ok(!raw.includes(accessToken), 'no column may echo the dash access token');
 });
 
 test('a digest lifted from the database is not a credential', async () => {
@@ -214,6 +224,14 @@ test('a session row written before this change still verifies', async () => {
 
     const res = await request('GET', '/api/status', { headers: { Cookie: 'session=' + token } });
     assert.strictEqual(res.status, 200, 'deploying this change must not boot everyone out');
+
+    const upgraded = getDb().prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(hashToken(token));
+    assert.ok(upgraded, 'the legacy row is upgraded to a digest on first use');
+    assert.strictEqual(
+        getDb().prepare('SELECT * FROM dashboard_sessions WHERE token = ?').get(token),
+        undefined,
+        'the plaintext row must not linger after the upgrade',
+    );
 });
 
 test('the dashboard add-user route hands back a token that actually works', async () => {

@@ -77,7 +77,7 @@ async function handlePanelList(interaction) {
         .setTimestamp();
 
     for (const p of panels) {
-        const types = getPanelTypes(p.id);
+        const types = getPanelTypes(p.id, p.guild_id);
         const typeNames = types.map(t => t.emoji + ' ' + t.name).join(', ') || '*No types*';
         embed.addFields({
             name: p.name,
@@ -107,7 +107,7 @@ async function handlePanelDelete(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === name.toLowerCase() || p.id === name);
     if (!panel) return interaction.reply({ content: '❌ Panel not found. Use `/ticket panel_list` to see available panels.', ephemeral: true });
 
-    deletePanel(panel.id);
+    deletePanel(panel.id, panel.guild_id);
     await interaction.reply({ content: '✅ Panel **' + panel.name + '** deleted.', ephemeral: true });
 }
 
@@ -118,7 +118,7 @@ async function handlePanelSend(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === name.toLowerCase() || p.id === name);
     if (!panel) return interaction.reply({ content: '❌ Panel not found. Use `/ticket panel_list` to see available panels.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     if (types.length === 0) {
         return interaction.reply({ content: '❌ This panel has no ticket types. Add one with `/ticket type_add` first.', ephemeral: true });
     }
@@ -138,7 +138,7 @@ async function handleTypeAdd(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const existing = getPanelTypes(panel.id).find(t => t.name.toLowerCase() === typeName.toLowerCase());
+    const existing = getPanelTypes(panel.id, panel.guild_id).find(t => t.name.toLowerCase() === typeName.toLowerCase());
     if (existing) return interaction.reply({ content: '❌ A type with that name already exists in this panel.', ephemeral: true });
 
     createPanelType(panel.id, interaction.guild.id, typeName, emoji);
@@ -152,11 +152,11 @@ async function handleTypeRemove(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
-    deletePanelType(type.id);
+    deletePanelType(type.id, panel.guild_id, panel.id);
     await interaction.reply({ content: '✅ Type **' + type.emoji + ' ' + type.name + '** removed from panel **' + panel.name + '**.', ephemeral: true });
 }
 
@@ -166,7 +166,7 @@ async function handleTypeList(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     if (types.length === 0) {
         return interaction.reply({ content: '❌ No types in this panel. Add one with `/ticket type_add`.', ephemeral: true });
     }
@@ -206,11 +206,11 @@ async function handleTypeCategory(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
-    updatePanelType(type.id, { category_id: channel ? channel.id : null });
+    updatePanelType(type.id, { category_id: channel ? channel.id : null }, panel.guild_id, panel.id);
     await interaction.reply({
         content: channel ? '✅ Category set to ' + String(channel) + ' for type **' + type.name + '**.' : '✅ Category cleared for type **' + type.name + '**.',
         ephemeral: true,
@@ -226,7 +226,7 @@ async function handleTypeRole(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
@@ -241,7 +241,7 @@ async function handleTypeRole(interaction) {
         updatedRoles = currentRoles.filter(r => r !== role.id);
     }
 
-    updatePanelType(type.id, { support_roles: updatedRoles });
+    updatePanelType(type.id, { support_roles: updatedRoles }, panel.guild_id, panel.id);
     await interaction.reply({
         content: action === 'add'
             ? '✅ ' + String(role) + ' added to support roles for **' + type.name + '**.'
@@ -259,11 +259,11 @@ async function handleTypeWelcome(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
-    updatePanelType(type.id, { welcome_message: message });
+    updatePanelType(type.id, { welcome_message: message }, panel.guild_id, panel.id);
     await interaction.reply({ content: '✅ Welcome message updated for **' + type.name + '**.', ephemeral: true });
 }
 
@@ -278,7 +278,7 @@ async function handleTypeQuestion(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
@@ -286,7 +286,7 @@ async function handleTypeQuestion(interaction) {
     if (questions.length >= 5) return interaction.reply({ content: '❌ Max 5 questions per type.', ephemeral: true });
 
     questions.push({ label, required, placeholder, maxLength: 500 });
-    updatePanelType(type.id, { questions });
+    updatePanelType(type.id, { questions }, panel.guild_id, panel.id);
     await interaction.reply({ content: '✅ Question **' + label + '** added (#' + questions.length + ').', ephemeral: true });
 }
 
@@ -299,7 +299,7 @@ async function handleTypeQuestionRemove(interaction) {
     const panel = panels.find(p => p.name.toLowerCase() === panelName.toLowerCase() || p.id === panelName);
     if (!panel) return interaction.reply({ content: '❌ Panel not found.', ephemeral: true });
 
-    const types = getPanelTypes(panel.id);
+    const types = getPanelTypes(panel.id, panel.guild_id);
     const type = types.find(t => t.name.toLowerCase() === typeName.toLowerCase() || t.id === typeName);
     if (!type) return interaction.reply({ content: '❌ Ticket type not found.', ephemeral: true });
 
@@ -307,7 +307,7 @@ async function handleTypeQuestionRemove(interaction) {
     if (index < 1 || index > questions.length) return interaction.reply({ content: '❌ Invalid question index. Use `/ticket type_list` to see question numbers.', ephemeral: true });
 
     const removed = questions.splice(index - 1, 1);
-    updatePanelType(type.id, { questions });
+    updatePanelType(type.id, { questions }, panel.guild_id, panel.id);
     await interaction.reply({ content: '✅ Removed question **' + (removed[0]?.label || 'Unknown') + '**.', ephemeral: true });
 }
 
@@ -426,7 +426,7 @@ async function handleTypeInactivity(interaction) {
     const panels = getPanels(interaction.guild.id);
     let foundType = null;
     for (const p of panels) {
-        const pTypes = getPanelTypes(p.id);
+        const pTypes = getPanelTypes(p.id, p.guild_id);
         for (const t of pTypes) {
             if (t.name.toLowerCase() === panelType.toLowerCase()) {
                 foundType = t;

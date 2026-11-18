@@ -4,6 +4,8 @@ const { addWarning, getWarnings, clearWarnings } = require('../warnings');
 const { createCase, closeCase } = require('../modCases');
 const { logError } = require('../logError');
 const { sendLog, modActionLogEmbed } = require('../logging');
+const { hierarchyBlock } = require('../modGuard');
+const { sendPunishmentDm } = require('../modDm');
 
 async function executeKick(interaction) {
     const target = interaction.options.getUser('user');
@@ -13,6 +15,12 @@ async function executeKick(interaction) {
 
     if (!member) {
         return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
+    }
+    // Your rank, not just the bot's: a `/perm` grant must not outrank you above
+    // members you couldn't otherwise touch.
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
     }
     if (!member.kickable) {
         return interaction.reply({ content: '\u26A0\uFE0F I cannot kick that user. They may have a higher role than me.', ephemeral: true });
@@ -63,6 +71,10 @@ async function executeBan(interaction) {
 
     // Check if user is bannable (if they're in the server)
     const member = await guild.members.fetch(target.id).catch(() => null);
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
+    }
     if (member && !member.bannable) {
         return interaction.reply({ content: '\u26A0\uFE0F I cannot ban that user. They may have a higher role than me.', ephemeral: true });
     }
@@ -118,6 +130,10 @@ async function executeTempBan(interaction) {
     }
 
     const member = await guild.members.fetch(target.id).catch(() => null);
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
+    }
     if (member && !member.bannable) {
         return interaction.reply({ content: '\u26A0\uFE0F I cannot ban that user. They may have a higher role than me.', ephemeral: true });
     }
@@ -210,6 +226,10 @@ async function executeTimeout(interaction) {
     if (!member) {
         return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
     }
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
+    }
     if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
         return interaction.reply({ content: '\u26A0\uFE0F I need the **Moderate Members** permission to do that.', ephemeral: true });
     }
@@ -234,7 +254,7 @@ async function executeTimeout(interaction) {
 
     try {
         await member.timeout(ms, reason);
-        createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'timeout', reason);
+        const modCase = createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'timeout', reason);
         // Wick-style log entry in the moderation log channel.
         await sendLog(modActionLogEmbed({
             verb: 'Mute', color: 0xE74C3C,
@@ -257,6 +277,15 @@ async function executeTimeout(interaction) {
             .setTimestamp();
 
         await interaction.reply({ embeds: [embed] });
+
+        // Receipt last, so the moderator's confirmation is never waiting on a
+        // DM. sendPunishmentDm cannot throw (see src/modDm.js).
+        await sendPunishmentDm({
+            guild, user: target, action: 'timeout', reason,
+            caseNumber: modCase ? modCase.case_number : null,
+            durationLabel: formatDuration(ms),
+            expiresAt: Date.now() + ms,
+        });
     } catch (err) {
         await interaction.reply({ content: '\u26A0\uFE0F Failed to timeout user: ' + err.message, ephemeral: true }).catch((err) => logError(err, 'commands', 'moderation/timeout'));
     }
@@ -269,6 +298,10 @@ async function executeUntimeout(interaction) {
 
     if (!member) {
         return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
+    }
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
     }
     if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
         return interaction.reply({ content: '\u26A0\uFE0F I need the **Moderate Members** permission to do that.', ephemeral: true });
@@ -324,7 +357,7 @@ async function executeWarn(interaction) {
             .setFooter({ text: guild.name, iconURL: guild.iconURL() })
             .setTimestamp();
 
-        createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'warn', reason);
+        const modCase = createCase(guild.id, target.id, interaction.user.id, interaction.user.tag, 'warn', reason);
         // Wick-style log entry in the moderation log channel.
         await sendLog(modActionLogEmbed({
             verb: 'Warn', color: 0xF1C40F,
@@ -334,6 +367,13 @@ async function executeWarn(interaction) {
             extraFields: [{ name: 'Warning Count', value: String(warnings.length) }],
         }), 'moderation', null, guild.id);
         await interaction.reply({ embeds: [embed] });
+
+        // Receipt for the warning itself, before any threshold punishment runs:
+        // if a threshold fires the member gets that receipt too, in order.
+        await sendPunishmentDm({
+            guild, user: target, action: 'warn', reason,
+            caseNumber: modCase ? modCase.case_number : null,
+        });
 
         // Check warning thresholds for auto-punish
         try {
@@ -349,11 +389,6 @@ async function executeWarn(interaction) {
         } catch (err) {
             logError(err, 'commands', 'moderation/thresholds');
         }
-
-        // DM the user about the warning
-        try {
-            await target.send('\u26A0\uFE0F You have been warned in **' + guild.name + '**.\nReason: ' + reason);
-        } catch { /* if DMs are closed, that's fine */ }
         return;
     }
 

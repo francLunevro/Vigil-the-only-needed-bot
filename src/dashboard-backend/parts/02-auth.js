@@ -3,6 +3,7 @@
 // and every access guard (requireAuth/requireOwner/checkOwner) plus the
 // fail-closed tenant scoping that all later parts consume via ctx.
 
+const express = require('express');
 const {
     passwordMatches, checkRateLimit, checkBucketRateLimit,
     sessions, SESSION_TTL_MS, SESSION_MAX_MS, generateSession, sessionCookieOptions,
@@ -10,42 +11,45 @@ const {
 } = require('../core');
 
 // ── Auth (password OR Discord ID + Access Token) ──
+const RECORD_CAPABILITIES = new Set(['records:read', 'records:write']);
+const RECORD_PATH = /^\/(?:notes|reports|ban-appeals)(?:\/|$)|^\/member\/[^/]+\/profile(?:\/|$)/i;
+
+function configuredStaffCapabilities() {
+    const raw = process.env.DASHBOARD_STAFF_CAPABILITIES;
+    if (!raw) return new Map();
+    let config;
+    try { config = JSON.parse(raw); } catch { /* handled below */ }
+    if (!config || typeof config !== 'object' || Array.isArray(config) ||
+        Object.entries(config).some(([userId, capabilities]) => !/^\d{5,25}$/.test(userId) ||
+            !Array.isArray(capabilities) || capabilities.some(capability => !RECORD_CAPABILITIES.has(capability)))) {
+        throw new Error('Invalid DASHBOARD_STAFF_CAPABILITIES configuration');
+    }
+    return new Map(Object.entries(config).map(([id, capabilities]) => [id, new Set(capabilities)]));
+}
+
 function register(app, ctx) {
-    // Session middleware — resolves the cookie into req.authenticated and
-    // re-verifies Discord sessions against dash_users on every request.
+    const staffCapabilities = configuredStaffCapabilities();
+    function resolveSession(token) {
+        const session = sessions.get(token);
+        if (!session) return null;
+        const now = Date.now();
+        if (!session.expiresAt || now >= session.expiresAt || now >= session.createdAt + SESSION_MAX_MS ||
+            (session.method === 'discord' && !isDashUser(session.userId, session.accessToken, { fromSession: true }))) {
+            sessions.delete(token);
+            return null;
+        }
+        return session;
+    }
+
     app.use((req, res, next) => {
-        const token = sessionTokenFrom(req);
-        // Kept on the request so handlers can tell "this session" from the
-        // others (the session list marks it, revoking it signs the caller out)
-        // without re-parsing the cookie — checkOwner/getSessionUser reuse it.
-        req.sessionToken = token;
-        if (token && sessions.has(token)) {
-            const session = sessions.get(token);
-            // Expired session (idle TTL or absolute max) — drop and treat as unauthenticated
-            const pastMax = session.createdAt && Date.now() > session.createdAt + SESSION_MAX_MS;
-            if (!session.expiresAt || Date.now() > session.expiresAt || pastMax) {
-                sessions.delete(token);
-                req.authenticated = false;
-                return next();
-            }
-            // Re-verify Discord-logged-in users against the dash_users table.
-            // The session holds the token's digest, not the token (see core.js),
-            // so this comparison is digest-to-digest — and it also picks up an
-            // expiry or a re-issued token, killing the session immediately.
-            if (session.method === 'discord' && session.userId) {
-                if (!isDashUser(session.userId, session.accessToken, { fromSession: true })) {
-                    sessions.delete(token);
-                    req.authenticated = false;
-                    return next();
-                }
-            }
-            // Sliding renewal — reset the expiry on every authenticated request
+        req.sessionToken = sessionTokenFrom(req);
+        const session = resolveSession(req.sessionToken);
+        req.authenticated = !!session;
+        req.dashboardSession = session;
+        if (session) {
             session.expiresAt = Date.now() + SESSION_TTL_MS;
             req.discordUserId = session.userId || null;
             req.sessionMethod = session.method;
-            req.authenticated = true;
-        } else {
-            req.authenticated = false;
         }
         next();
     });
@@ -63,7 +67,7 @@ function register(app, ctx) {
     // req.path made the exemption list above silently dead code; always
     // resolve the full path from originalUrl.
     function fullPath(req) {
-        return String(req.originalUrl || req.url || '').split('?')[0];
+        return String(req.originalUrl || req.url || '').split('?')[0].toLowerCase();
     }
 
     app.use('/api/', (req, res, next) => {
@@ -98,6 +102,14 @@ function register(app, ctx) {
         next();
     });
 
+    // Throttle before reading bodies. Only the owner import route needs
+    // the larger budget, and it must authenticate before consuming it.
+    app.post('/api/import/all', requireAuth, requireOwner,
+        express.json({ limit: '25mb' }),
+        express.urlencoded({ extended: true, limit: '25mb' }));
+    app.use('/api', express.json({ limit: '1mb' }),
+        express.urlencoded({ extended: true, limit: '1mb' }));
+
     app.post('/api/login', (req, res) => {
         // Rate limiting by IP
         const ip = req.ip || req.connection.remoteAddress || 'unknown';
@@ -106,7 +118,7 @@ function register(app, ctx) {
             console.warn('[Dashboard] Rate limit hit for IP:', ip);
             return res.status(429).json({ success: false, error: 'Too many attempts. Please wait a minute.' });
         }
-        const { password, discordId, accessToken } = req.body;
+        const { password, discordId, accessToken } = req.body || {};
         const now = Date.now();
         const expiresAt = now + SESSION_TTL_MS;
         if (password && passwordMatches(password)) {
@@ -165,36 +177,36 @@ function register(app, ctx) {
         next();
     }
 
-    function checkOwner(req, _res) {
-        // For password-authenticated sessions, allow mod actions
-        // For Discord-authenticated sessions, check if the user is the bot owner
-        const token = req.sessionToken || sessionTokenFrom(req);
-        if (!token || !sessions.has(token)) return false;
-        const session = sessions.get(token);
-        if (session.method === 'password') return true; // password = full access
-        if (session.method === 'discord' && session.userId === process.env.OWNER_ID) return true;
-        return false;
+    function isOwnerSession(session) {
+        return session?.method === 'password' ||
+            (session?.method === 'discord' && session.userId === process.env.OWNER_ID);
+    }
+
+    function checkOwner(req) {
+        return isOwnerSession(req.dashboardSession);
     }
 
     function getSessionUser(req) {
-        const token = req.sessionToken || sessionTokenFrom(req);
-        if (!token || !sessions.has(token)) return 'unknown';
-        const session = sessions.get(token);
-        return session.userId || process.env.OWNER_ID || 'dashboard';
+        if (!req.dashboardSession) return 'unknown';
+        return req.discordUserId || process.env.OWNER_ID || 'dashboard';
     }
 
-    // ── Tenant scoping ──
-    // Password sessions and the OWNER_ID discord session see every server.
-    // Any other dash user only sees servers explicitly granted to them in
-    // dash_user_guilds. Fail-closed: unknown sessions are treated as scoped
-    // with zero grants.
-    function getScopedGuildIds(req) {
-        if (checkOwner(req)) return null;
-        const session = req.sessionToken ? sessions.get(req.sessionToken) : null;
+    function scopeForSession(session) {
+        if (isOwnerSession(session)) return null;
         if (!session || session.method !== 'discord' || !session.userId) return new Set();
         const db = require('../../db').getDb();
         return new Set(db.prepare('SELECT guild_id FROM dash_user_guilds WHERE user_id = ?')
             .all(session.userId).map(r => r.guild_id));
+    }
+
+    function getScopedGuildIds(req) {
+        return scopeForSession(req.dashboardSession);
+    }
+
+    // Undefined means invalid. Null is reserved for a valid installation owner.
+    function getLiveGuildScope(token) {
+        const session = resolveSession(token);
+        return session ? scopeForSession(session) : undefined;
     }
 
     function canAccessGuild(req, guildId) {
@@ -215,13 +227,15 @@ function register(app, ctx) {
         next();
     }
 
-    // Tenant guard — covers EVERY /api/server/:id/* route in one place so a
-    // new route can never accidentally skip the scope check. Must run before
-    // any server route from the later parts registers.
-    app.use((req, res, next) => {
-        const m = req.path.match(/^\/api\/server\/([^/]+)/);
-        if (m && !canAccessGuild(req, m[1])) {
+    // Match and decode guild IDs using the same router as the handlers.
+    app.use('/api/server/:guildId', (req, res, next) => {
+        if (!canAccessGuild(req, req.params.guildId)) {
             return res.status(403).json({ error: 'You do not have access to this server' });
+        }
+        const capabilities = staffCapabilities.get(req.discordUserId);
+        if (capabilities && !checkOwner(req) && RECORD_PATH.test(req.path)) {
+            const needed = ['GET', 'HEAD'].includes(req.method) ? 'records:read' : 'records:write';
+            if (!capabilities.has(needed)) return res.status(403).json({ error: 'Staff capability required' });
         }
         next();
     });
@@ -232,6 +246,7 @@ function register(app, ctx) {
     ctx.checkOwner = checkOwner;
     ctx.getSessionUser = getSessionUser;
     ctx.getScopedGuildIds = getScopedGuildIds;
+    ctx.getLiveGuildScope = getLiveGuildScope;
     ctx.canAccessGuild = canAccessGuild;
     ctx.filterByScope = filterByScope;
 }

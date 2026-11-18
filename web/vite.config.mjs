@@ -24,7 +24,11 @@ export default defineConfig({
         // The CSP forbids inline scripts, so keep assets as real files and
         // avoid Vite's dev-oriented inlining heuristics.
         assetsInlineLimit: 0,
-        sourcemap: true,
+        // No source maps in the shipped build: web/dist is served publicly
+        // (the login page loads it), so a .map file would publish the whole
+        // source tree. Express refuses .map requests as well, so a stale dist
+        // cannot leak one either.
+        sourcemap: false,
     },
     server: {
         port: 5173,

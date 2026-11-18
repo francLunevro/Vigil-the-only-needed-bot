@@ -28,6 +28,25 @@ function parseRoleIds(v) {
     }
 }
 
+// winner_ids is persisted as a comma-joined list of user ids (see endGiveaway /
+// rerollGiveaway below). Rows written by older builds — and by test fixtures —
+// stored a JSON array instead, so every reader goes through here and always gets
+// an array. Parsing the column with JSON.parse alone turns a single id into a
+// number and throws for two or more, which used to empty the whole API list.
+function parseWinnerIds(value) {
+    if (Array.isArray(value)) return value.filter(Boolean).map(String);
+    if (!value) return [];
+    const raw = String(value).trim();
+    if (!raw) return [];
+    if (raw[0] === '[') {
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String);
+        } catch { /* not JSON — fall through to the comma form */ }
+    }
+    return raw.split(',').map(id => id.trim()).filter(Boolean);
+}
+
 function parseHexColor(hex) {
     if (!hex) return null;
     const c = parseInt(String(hex).replace('#', ''), 16);
@@ -93,7 +112,7 @@ function cancelGiveaway(id) {
     const g = getGiveaway(id);
     if (!g) return { error: 'Giveaway not found' };
     if (g.status !== 'active') return { error: 'Giveaway is already ' + g.status };
-    getDb().prepare("UPDATE giveaways SET status = 'cancelled', ended_at = ? WHERE id = ?").run(Date.now(), id);
+    getDb().prepare("UPDATE giveaways SET status = 'cancelled', ended_at = ? WHERE id = ? AND guild_id = ? AND status = 'active'").run(Date.now(), id, g.guild_id);
     return { success: true, giveaway: getGiveaway(id) };
 }
 
@@ -256,8 +275,8 @@ async function endGiveaway(id, opts = {}) {
 
     // Atomically reserve the end — guards against the 15s timer racing a manual /end.
     // better-sqlite3 runs this single statement synchronously, so only one caller wins.
-    const result = getDb().prepare("UPDATE giveaways SET status = 'ended', winner_ids = ?, ended_at = ? WHERE id = ? AND status = 'active'")
-        .run(winnerIds.join(','), Date.now(), id);
+    const result = getDb().prepare("UPDATE giveaways SET status = 'ended', winner_ids = ?, ended_at = ? WHERE id = ? AND guild_id = ? AND status = 'active'")
+        .run(winnerIds.join(','), Date.now(), id, g.guild_id);
     if (result.changes === 0) {
         return { error: 'Giveaway is already ended' };
     }
@@ -279,7 +298,7 @@ async function rerollGiveaway(id) {
     if (!g) return { error: 'Giveaway not found' };
     if (g.status !== 'ended') return { error: 'Only ended giveaways can be rerolled' };
 
-    const previous = (g.winner_ids || '').split(',').filter(Boolean);
+    const previous = parseWinnerIds(g.winner_ids);
     let newWinners = [];
     let message = null;
     let guild = null;
@@ -297,8 +316,9 @@ async function rerollGiveaway(id) {
         }
     }
 
-    getDb().prepare('UPDATE giveaways SET winner_ids = ?, ended_at = ? WHERE id = ?')
-        .run(newWinners.join(','), Date.now(), id);
+    const result = getDb().prepare("UPDATE giveaways SET winner_ids = ?, ended_at = ? WHERE id = ? AND guild_id = ? AND status = 'ended' AND winner_ids IS ?")
+        .run(newWinners.join(','), Date.now(), id, g.guild_id, g.winner_ids);
+    if (!result.changes) return { error: 'Giveaway changed during reroll' };
 
     const updated = getGiveaway(id);
     if (message) {
@@ -350,6 +370,7 @@ module.exports = {
     isEligible,
     filterEligibleEntrants,
     pickWinners,
+    parseWinnerIds,
     parseHexColor,
     postGiveaway,
     endGiveaway,

@@ -48,7 +48,9 @@ const { closeDb } = require('../src/db');
 const VANILLA_MARKER = '/static/parts/00-entry.mjs';
 const reactBuilt = fs.existsSync(REACT_ENTRY);
 
-setDashboardClient({ guilds: { cache: new Collection() }, user: null, ws: { ping: 1 } }, 'test-password');
+// /health now reports real Discord readiness, so the fixture models a client
+// that is actually connected rather than a bare object.
+setDashboardClient({ guilds: { cache: new Collection() }, user: null, ws: { ping: 1 }, isReady: () => true }, 'test-password');
 
 // Two apps in one process: the default (React at /) and the escape hatch
 // (DASHBOARD_UI=legacy). The flag is read when the app is assembled.

@@ -106,13 +106,15 @@ export default function Overview() {
                     {show('status') && (
                         <Card title="Process" icon="server">
                             <div className="kv">
-                                <span>Memory (RSS)</span><strong>{online ? mb(status.memory) : '—'}</strong>
+                                {/* Scoped sessions get null for host vitals (they are not
+                                    attributable to a guild); render an em dash, not "0.0 MB". */}
+                                <span>Memory (RSS)</span><strong>{online && status.memory !== null ? mb(status.memory) : '—'}</strong>
                             </div>
                             <div className="kv">
-                                <span>Heap used</span><strong>{online ? mb(status.heapUsed) : '—'}</strong>
+                                <span>Heap used</span><strong>{online && status.heapUsed !== null ? mb(status.heapUsed) : '—'}</strong>
                             </div>
                             <div className="kv">
-                                <span>Node</span><strong>{online ? status.nodeVersion : '—'}</strong>
+                                <span>Node</span><strong>{online && status.nodeVersion ? status.nodeVersion : '—'}</strong>
                             </div>
                             <div className="kv">
                                 <span>Version</span><strong>{online ? ('v' + status.version) : '—'}</strong>

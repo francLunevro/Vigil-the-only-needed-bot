@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { api } from '../api.js';
-import { useAsync, num } from '../lib.js';
-import { Card, Skeleton, Empty, Loaded, Icon, Input, Select } from '../components/ui.jsx';
+import { useAsync, num, timeAgo } from '../lib.js';
+import { Card, Skeleton, Empty, Loaded, Icon, Input, Select, Badge } from '../components/ui.jsx';
 import { useToast } from '../components/Toast.jsx';
 
-// Per-server Mod Tools: the four cards vanilla's hub pane rendered — staff
-// notes, invite tracking, quick mod actions and temporary roles. Every call
-// goes to an endpoint that already existed:
+// Per-server Mod Tools: the cards vanilla's hub pane rendered — staff notes,
+// invite tracking, quick mod actions and temporary roles — plus the member
+// file, which is the one place that shows everything about a member at once.
+// Every call goes to an endpoint that already existed:
 //   GET/POST        /api/server/:id/notes[?userId=]
 //   GET             /api/server/:id/invites
 //   POST            /api/server/:id/mod/{warn|kick|ban|timeout}
 //   GET/POST/DELETE /api/server/:id/temp-roles
+//   GET             /api/server/:id/members/search?q=
+//   GET             /api/server/:id/member/:userId/profile
 // Notes and invites accept any authenticated session; the four actions and
 // both temp-role mutations are owner-only and answer 403 with their own
 // message, which is what the UI shows rather than guessing at the cause.
@@ -338,9 +341,214 @@ function TempRolesSection({ serverId, reloadKey }) {
     );
 }
 
+// ── Member file ──
+// Everything staff know about one member, composed by src/memberFile.js on the
+// server: the merged timeline across warnings, cases, notes, reports, appeals
+// and tickets, plus the per-system totals. The route is the member profile the
+// vanilla pane already called — it returns the same warnings/notes/cases/invites
+// arrays it always did, and now also the `memberFile` this renders, so an older
+// payload degrades to the message below instead of throwing.
+
+// Badge tone per source, so the same system keeps one colour down the timeline.
+// Only the tones styles.css defines (good / bad / warn / default): a tone
+// without a rule would render an unstyled badge, which reads as a bug.
+const KIND_TONE = {
+    case: 'bad',
+    tempban: 'bad',
+    warning: 'warn',
+    report: 'warn',
+    ticket: 'good',
+    note: 'default',
+    appeal: 'default',
+};
+
+const KIND_LABEL = {
+    case: 'Case',
+    warning: 'Warning',
+    note: 'Note',
+    report: 'Report',
+    appeal: 'Appeal',
+    ticket: 'Ticket',
+    tempban: 'Temp ban',
+};
+
+// Which systems to count in the header, in a fixed order — the timeline shows
+// one row per event, this shows how much of each there is.
+const STAT_ROWS = [
+    { key: 'warnings', label: 'Warnings' },
+    { key: 'cases', label: 'Cases' },
+    { key: 'notes', label: 'Notes' },
+    { key: 'reports', label: 'Reports' },
+    { key: 'appeals', label: 'Appeals' },
+    { key: 'tickets', label: 'Tickets' },
+];
+
+// Pure presenter: takes the payload, renders it. Kept separate from the
+// fetching card so it can be rendered directly in a test with a crafted file.
+export function MemberFileView({ member, invites, file }) {
+    if (!file) {
+        return (
+            <Empty title="Member file unavailable"
+                hint="This server did not return the composed member file. Reload the page, and check the Errors screen if it persists." />
+        );
+    }
+
+    const summaries = file.summaries || {};
+    const timeline = file.timeline || [];
+    const open = file.activePunishments || [];
+    const pending = (summaries.reports && summaries.reports.pending) || 0;
+    const appealsPending = (summaries.appeals && summaries.appeals.pending) || 0;
+    const invitesTotal = (invites && invites.total) || 0;
+
+    return (
+        <>
+            <div className="toolbar">
+                <span className="mono">
+                    {member ? (member.tag + (member.isBot ? ' (bot)' : '')) : 'Not in this server — showing stored history'}
+                </span>
+                {member && member.joinedAt && <span className="dist-meta">joined {new Date(member.joinedAt).toLocaleDateString()}</span>}
+                <span className="dist-meta">{num(invitesTotal)} invite{invitesTotal === 1 ? '' : 's'}</span>
+            </div>
+
+            <div className="rows mt">
+                {STAT_ROWS.map((row) => {
+                    const s = summaries[row.key] || {};
+                    const sub = row.key === 'cases' && s.active ? s.active + ' active'
+                        : row.key === 'reports' && s.pending ? s.pending + ' pending'
+                            : row.key === 'appeals' && s.pending ? s.pending + ' pending'
+                                : row.key === 'tickets' && s.open ? s.open + ' open'
+                                    : null;
+                    return (
+                        <div className="dist" key={row.key}>
+                            <span className="dist-name"><strong>{num(s.total || 0)}</strong> {row.label}</span>
+                            {sub && <span className="dist-count">{sub}</span>}
+                        </div>
+                    );
+                })}
+            </div>
+
+            {(open.length > 0 || pending > 0 || appealsPending > 0) && (
+                <div className="result result-bad mt">
+                    {open.map((p, i) => (
+                        <div key={(p.caseNumber || i) + p.type}>
+                            {p.type}{p.caseNumber ? ' (case #' + p.caseNumber + ')' : ''} since {timeAgo(p.since)}
+                            {p.until ? ' · until ' + new Date(p.until).toLocaleString() : ''}
+                            {p.reason ? ' — ' + p.reason : ''}
+                        </div>
+                    ))}
+                    {pending > 0 && <div>{pending} report(s) awaiting review</div>}
+                    {appealsPending > 0 && <div>{appealsPending} ban appeal(s) pending</div>}
+                </div>
+            )}
+
+            {timeline.length === 0
+                ? <Empty title="Nothing on file" hint="No warnings, cases, notes, reports, appeals or tickets for this member." />
+                : (
+                    <div className="rows mt">
+                        {timeline.map((entry) => (
+                            <div className="dist" key={entry.kind + ':' + entry.id}>
+                                <span className="dist-name">
+                                    <Badge tone={KIND_TONE[entry.kind] || 'default'}>{KIND_LABEL[entry.kind] || entry.kind}</Badge>
+                                    {' '}<strong>{entry.title}</strong>
+                                </span>
+                                <span className="dist-meta">
+                                    {entry.detail ? String(entry.detail).slice(0, 160) : '—'}
+                                    {entry.actor ? ' · by ' + entry.actor : ''}
+                                    {' · '}{timeAgo(entry.at)}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+            <p className="hint">
+                Newest first. {file.truncated ? 'Older entries are capped per system — ' : ''}
+                Staff notes and appeals are never shown to the member; the same file is available in Discord with{' '}
+                <code>/memberfile</code>.
+            </p>
+            {file.errors && file.errors.length > 0 && (
+                <p className="hint">Could not read: {file.errors.join(', ')}.</p>
+            )}
+        </>
+    );
+}
+
+function MemberFileSection({ serverId, reloadKey }) {
+    const toast = useToast();
+    const [lookup, setLookup] = useState('');
+    const [searched, setSearched] = useState('');
+    const [results, setResults] = useState(null);
+    const [searching, setSearching] = useState(false);
+
+    const { data, loading, error } = useAsync(
+        () => (searched
+            ? api.get('/api/server/' + serverId + '/member/' + encodeURIComponent(searched) + '/profile')
+            : Promise.resolve(null)),
+        [serverId, searched, reloadKey]
+    );
+
+    // Search by name or id through the endpoint the vanilla pane used; picking a
+    // result is what loads the file, so a half-typed id never queries.
+    async function search() {
+        const q = lookup.trim();
+        if (!q) { toast('Enter a name or user ID', true); return; }
+        setSearching(true);
+        try {
+            const d = await api.get('/api/server/' + serverId + '/members/search?q=' + encodeURIComponent(q));
+            const members = (d && d.members) || [];
+            setResults(members);
+            if (members.length === 0) toast('No members matched', true);
+        } catch (err) {
+            toast(err.message || 'Search failed', true);
+        } finally {
+            setSearching(false);
+        }
+    }
+
+    function open(id) {
+        setSearched(id);
+        setResults(null);
+    }
+
+    return (
+        <Card title="Member File" icon="users">
+            <div className="toolbar">
+                <Input placeholder="Name or user ID…" value={lookup}
+                    onChange={(e) => setLookup(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') search(); }} />
+                <button className="btn btn-ghost" onClick={search} disabled={searching}>
+                    {searching ? 'Searching…' : 'Search'}
+                </button>
+            </div>
+
+            {results && results.length > 0 && (
+                <div className="rows mt">
+                    {results.map((m) => (
+                        <div className="dist" key={m.id}>
+                            <span className="dist-name"><strong>{m.tag || m.displayName || m.id}</strong></span>
+                            <span className="dist-meta">{m.isBot ? 'bot' : '@' + (m.displayName || '')}</span>
+                            <button className="btn btn-ghost" onClick={() => open(m.id)}>Open file</button>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {!searched && <p className="hint">Search a member to open their full file — warnings, cases, notes, reports, appeals and tickets.</p>}
+            {searched && error && <Empty title="Could not load the member file" hint={error.message} />}
+            {searched && !error && loading && !data && <Skeleton rows={4} />}
+            {searched && !error && data && (
+                <div className="mt">
+                    <MemberFileView member={data.member} invites={data.invites} file={data.memberFile} />
+                </div>
+            )}
+        </Card>
+    );
+}
+
 export default function ServerModTools({ serverId, reloadKey }) {
     return (
         <>
+            <MemberFileSection serverId={serverId} reloadKey={reloadKey} />
             <NotesSection serverId={serverId} reloadKey={reloadKey} />
             <InvitesSection serverId={serverId} reloadKey={reloadKey} />
             <ActionsSection serverId={serverId} />

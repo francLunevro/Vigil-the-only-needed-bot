@@ -6,39 +6,40 @@
 
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
-const { getDb, getErrorLogs, getErrorTagCounts, clearErrorLogs, backupDatabase, listBackups, deleteBackup } = require('../../db');
+const { listApiTokens, createApiToken, revokeApiToken } = require('../../apiTokens');
+const { getDb, getErrorLogs, getErrorTagCounts, clearErrorLogs, backupDatabase, listBackups, deleteBackup, recordAuditTrail } = require('../../db');
 const { getDataDir } = require('../../data');
 const { logError } = require('../../logError');
 const { discordApiBreaker } = require('../../helpers');
 const { getClient, getRateLimitConfig, invalidateRateLimitConfigCache } = require('../core');
+const { buildHealth } = require('../../health');
+const { buildAssetMiddleware } = require('../static-assets');
 
 function register(app, ctx) {
-    const { requireAuth, requireOwner, checkOwner } = ctx;
+    const { requireAuth, requireOwner, checkOwner, getSessionUser } = ctx;
 
     // ── API Tokens (for external integrations) ──
+    // Minting/listing/revoking is owner-gated here; the tokens are *used* by
+    // the /api/v1 routes in part 12. Both sides share src/apiTokens.js so the
+    // hashing, the scope list and the expiry rules live in one place.
     app.get('/api/tokens', requireAuth, requireOwner, (req, res) => {
-        const db = getDb();
-        const tokens = db.prepare('SELECT id, name, token_hash, scopes, created_at, last_used_at, expires_at FROM api_tokens ORDER BY created_at DESC').all();
-        res.json(tokens.map(t => ({ ...t, token_hash: t.token_hash.slice(0, 8) + '...' })));
+        res.json(listApiTokens());
     });
 
     app.post('/api/tokens', requireAuth, requireOwner, (req, res) => {
         const { name, scopes, expiresInDays } = req.body;
-        if (!name) return res.status(400).json({ error: 'Missing name' });
-        const token = 'nlux_' + crypto.randomBytes(32).toString('base64url');
-        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-        const expiresAt = expiresInDays ? Date.now() + expiresInDays * 24 * 60 * 60 * 1000 : null;
-        const db = getDb();
-        db.prepare('INSERT INTO api_tokens (name, token_hash, scopes, expires_at) VALUES (?, ?, ?, ?)')
-            .run(name, tokenHash, JSON.stringify(scopes || []), expiresAt);
-        res.json({ success: true, token }); // Only time the full token is returned
+        const created = createApiToken({ name, scopes, expiresInDays });
+        if (created.error) return res.status(400).json({ error: created.error });
+        // Audit records the entry's id, name and scopes only, never the token value.
+        recordAuditTrail({ type: 'token', userId: getSessionUser(req), action: 'token.create', details: { tokenId: created.entry.id, name: created.entry.name, scopes: created.entry.scopes } });
+        // Only time the full token is returned; it is not recoverable after this.
+        res.json({ success: true, token: created.token, entry: created.entry });
     });
 
     app.delete('/api/tokens/:id', requireAuth, requireOwner, (req, res) => {
-        const db = getDb();
-        const result = db.prepare('DELETE FROM api_tokens WHERE id = ?').run(req.params.id);
-        res.json({ success: result.changes > 0 });
+        const revoked = revokeApiToken(req.params.id);
+        if (revoked) recordAuditTrail({ type: 'token', userId: getSessionUser(req), action: 'token.revoke', details: { tokenId: req.params.id } });
+        res.json({ success: revoked });
     });
 
     // ── Rate Limit Configuration ──
@@ -100,15 +101,11 @@ function register(app, ctx) {
     });
 
     // ── Health Check (no auth — hosts probe this to restart hung containers) ──
+    // Checks what it reports: a real database query and the client's readiness
+    // (see src/health.js for why only a dead database is a 503).
     app.get('/health', (req, res) => {
-        const client = getClient();
-        res.json({
-            status: 'ok',
-            botReady: !!(client && client.isReady && client.isReady()),
-            uptime: Math.round(process.uptime()),
-            db: 'ok',
-            timestamp: Date.now(),
-        });
+        const report = buildHealth({ client: getClient() });
+        res.status(report.httpStatus).json(report.body);
     });
 
     // ── Prometheus Metrics (no auth — for scraping) ──
@@ -189,9 +186,9 @@ function register(app, ctx) {
         if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can manage backups' });
         res.json({ backups: listBackups() });
     });
-    app.post('/api/backups', requireAuth, (req, res) => {
+    app.post('/api/backups', requireAuth, async (req, res) => {
         if (!checkOwner(req)) return res.status(403).json({ error: 'Only the bot owner can manage backups' });
-        const backup = backupDatabase();
+        const backup = await backupDatabase();
         if (!backup) return res.status(500).json({ error: 'Backup failed' });
         res.json({ success: true, backup, backups: listBackups() });
     });
@@ -488,8 +485,10 @@ function register(app, ctx) {
         // Content-hashed JS/CSS of the React build, served from the site root
         // (vite base '/'). Public on purpose: the login screen is served
         // logged-out and still has to load them. `index: false` keeps
-        // directory requests out of static so the guards below own the HTML.
-        app.use(require('express').static(reactDir, { index: false }));
+        // directory requests out of static so the guards below own the HTML;
+        // buildAssetMiddleware additionally refuses source maps, which a stale
+        // dist could still contain.
+        app.use(buildAssetMiddleware(reactDir));
 
         // Bookmarks and docs pointing at the old /app mount. Redirecting with
         // no fragment in the Location header preserves the hash route, so

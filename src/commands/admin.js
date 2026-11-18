@@ -3,6 +3,7 @@ const { truncate } = require('../helpers');
 const { getGuildConfig, updateGuildConfig } = require('../config');
 const { deployCommands } = require('../deploy');
 const { logError } = require('../logError');
+const { hierarchyBlock } = require('../modGuard');
 
 async function executeRole(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -14,6 +15,12 @@ async function executeRole(interaction) {
         const member = await guild.members.fetch(target.id).catch(() => null);
         if (!member) {
             return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
+        }
+        // Handing out a role above your own rank (or editing a member who
+        // outranks you) is privilege escalation, not a moderation action.
+        const blocked = hierarchyBlock(interaction, member, role);
+        if (blocked) {
+            return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
         }
 
         if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
@@ -44,6 +51,10 @@ async function executeRole(interaction) {
         const member = await guild.members.fetch(target.id).catch(() => null);
         if (!member) {
             return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
+        }
+        const blocked = hierarchyBlock(interaction, member, role);
+        if (blocked) {
+            return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
         }
 
         if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
@@ -159,6 +170,10 @@ async function executeNickname(interaction) {
     const member = await guild.members.fetch(target.id).catch(() => null);
     if (!member) {
         return interaction.reply({ content: '\u26A0\uFE0F Could not find that user in this server.', ephemeral: true });
+    }
+    const blocked = hierarchyBlock(interaction, member);
+    if (blocked) {
+        return interaction.reply({ content: '\u26A0\uFE0F ' + blocked, ephemeral: true });
     }
 
     if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageNicknames)) {
