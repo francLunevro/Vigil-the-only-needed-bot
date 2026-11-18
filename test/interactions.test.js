@@ -106,7 +106,7 @@ function makeInteraction({ type = 'button', customId, userId = '111', user, mess
         isButton: () => type === 'button',
         isModalSubmit: () => type === 'modal',
         isStringSelectMenu: () => type === 'select',
-        isUserSelect: () => type === 'userSelect',
+        isUserSelectMenu: () => type === 'userSelect',
         reply: async (o) => { calls.reply.push(o); },
         update: async (o) => { calls.update.push(o); },
         deferUpdate: async () => { calls.deferUpdate++; },
@@ -775,7 +775,7 @@ test('tvc_claim refuses while the owner is still in the channel', async () => {
         channelCache: new Map([['vc7', { id: 'vc7', members: new Set(['999']) }]]),
     });
     const member = makeMember('111', { voice: { channelId: 'vc7' } });
-    const ownerRow = { owner_id: '999', trigger_id: 'trig7' };
+    const ownerRow = { owner_id: '999', trigger_id: 'trig7', guild_id: guild.id };
     const restore = patch(tv, {
         getMemberChannelFor: () => ({ row: ownerRow, channel: { id: 'vc7' } }),
         getSpawnedChannel: (_id) => ownerRow,
@@ -795,7 +795,7 @@ test('tvc_claim transfers ownership when the owner left', async () => {
     });
     const member = makeMember('111', { voice: { channelId: 'vc8' } });
     const added = [];
-    const ownerRow = { owner_id: '999', trigger_id: 'trig8' };
+    const ownerRow = { owner_id: '999', trigger_id: 'trig8', guild_id: guild.id };
     const restore = patch(tv, {
         getMemberChannelFor: () => ({ row: ownerRow, channel: { id: 'vc8' } }),
         getSpawnedChannel: (_id) => ownerRow,

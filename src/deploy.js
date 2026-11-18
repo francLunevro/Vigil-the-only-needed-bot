@@ -783,6 +783,21 @@ const commandDefs = [
             sub.setName('unlock')
                 .setDescription('Unlock your temp channel'))
         .addSubcommand(sub =>
+            sub.setName('kick')
+                .setDescription('Disconnect a member from your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to disconnect').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('block')
+                .setDescription('Block a member from joining your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to block').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('unblock')
+                .setDescription('Remove a Vigil block from your temporary voice channel')
+                .addUserOption(opt => opt.setName('user').setDescription('Member to unblock').setRequired(true)))
+        .addSubcommand(sub =>
+            sub.setName('blocked')
+                .setDescription('View the members Vigil has blocked from your temporary voice channel'))
+        .addSubcommand(sub =>
             sub.setName('claim')
                 .setDescription('Take ownership of the temp channel you are in')),
     new SlashCommandBuilder()

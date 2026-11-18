@@ -758,6 +758,19 @@ function initSchema() {
                 WHERE delivery_state = 'pending' AND (notified = 1 OR attempts >= 3);
             `);
         } },
+        { name: '0045_temp_vc_moderation', run: () => {
+            addColumnIfMissing('temp_vc_channels', 'retiring', 'INTEGER NOT NULL DEFAULT 0');
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS temp_vc_blocks (
+                    channel_id TEXT NOT NULL REFERENCES temp_vc_channels(channel_id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    previous_allow INTEGER NOT NULL CHECK (previous_allow IN (0, 1)),
+                    had_overwrite INTEGER NOT NULL CHECK (had_overwrite IN (0, 1)),
+                    confirmed INTEGER NOT NULL DEFAULT 0 CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (channel_id, user_id)
+                );
+            `);
+        } },
     ];
 
     for (const migration of MIGRATIONS) {

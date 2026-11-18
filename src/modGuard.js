@@ -13,6 +13,23 @@
 // someone act on members they actually outrank.
 
 const { isOwner } = require('./helpers');
+const { PermissionFlagsBits } = require('discord.js');
+const { hasPermission } = require('./permissions');
+
+const MODERATION_GRANTS = [
+    'kick', 'ban', 'tempban', 'unban', 'timeout', 'untimeout', 'warn', 'clearwarnings',
+    'purge', 'lock', 'unlock', 'slowmode', 'role', 'nickname', 'tempvc',
+];
+
+function hasModerationAuthority(guild, member, channel) {
+    return isOwner(member.id) || member.id === guild.ownerId ||
+        member.permissions.any([
+            PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageGuild,
+            PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ModerateMembers,
+        ]) ||
+        channel.permissionsFor(member)?.any([PermissionFlagsBits.MoveMembers, PermissionFlagsBits.ManageChannels]) ||
+        MODERATION_GRANTS.some(command => hasPermission(guild.id, command, member.id));
+}
 
 // A member's top role position, or null when there is no role data to read
 // (test doubles and legacy shims). An unknown position is never used to block:
@@ -74,4 +91,4 @@ function hierarchyBlock(interaction, target, role) {
     });
 }
 
-module.exports = { checkHierarchy, hierarchyBlock, topPosition };
+module.exports = { checkHierarchy, hierarchyBlock, topPosition, hasModerationAuthority };

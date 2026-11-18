@@ -34,7 +34,7 @@ async function handleInteraction(interaction) {
     if (interaction.isStringSelectMenu()) {
         return handleSelectMenu(interaction);
     }
-    if (interaction.isUserSelect()) {
+    if (interaction.isUserSelectMenu()) {
         return handleUserSelect(interaction);
     }
 }
@@ -169,7 +169,10 @@ async function handleSelectMenu(interaction) {
 // ──────────────────── User select ────────────────────
 
 async function handleUserSelect(interaction) {
-    // Currently unused but needed for future user-select menus
+    const parts = interaction.customId.split('_');
+    if (parts[0] === 'tvc') {
+        return require('./tempVoiceModeration').handleModerationSelection(interaction, parts);
+    }
     await interaction.reply({ content: 'User selected.', ephemeral: true });
 }
 

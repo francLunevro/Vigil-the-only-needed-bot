@@ -170,8 +170,8 @@ const { handleInteraction } = require('./src/interactions');
 client.on(Events.InteractionCreate, async (interaction) => {
     try {
         // Handle components (buttons, modals, select menus) separately
-        if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
-            return handleInteraction(interaction);
+        if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu() || interaction.isUserSelectMenu()) {
+            return await handleInteraction(interaction);
         }
 
         // Handle slash commands — shared pipeline (cooldown, owner guard,
@@ -194,7 +194,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const reply = interaction.deferred || interaction.replied
                 ? interaction.editReply.bind(interaction)
                 : interaction.reply.bind(interaction);
-            reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true });
+            await reply({ content: '❌ Something went wrong. Please try again.', ephemeral: true });
         } catch { /* ignore double-fail */ }
     }
 });

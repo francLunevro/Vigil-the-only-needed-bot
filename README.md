@@ -248,6 +248,14 @@ Three formats: `daily 18:00`, `weekly monday 18:00`, or `interval 60` in minutes
 
 Empty ones delete themselves, and the trigger channel frees up straight away.
 
+Owners can use `/tempvc kick user:@member`, `/tempvc block user:@member`, `/tempvc unblock user:@member`, and `/tempvc blocked`. The control panel offers the same actions. Kick disconnects the member from voice. Block prevents the member from reconnecting to that channel and disconnects them if they are already there. Blocks follow the channel across ownership changes and restarts.
+
+Vigil needs **Move Members** to disconnect someone and **Manage Roles** to edit the channel overwrite. The owner needs neither. Kick and block protect server staff, including members with Vigil moderation grants, and successful actions use the configured **Voice** log. Slash commands and panel selections share a three-second cooldown.
+
+Unblock respects current channel and role restrictions. If Discord's response leaves a denial unconfirmed, the blocked list flags it for a server administrator to review in the channel's permission settings.
+
+For a live rollout check, use a test server to verify slash command registration and the refreshed panel, then check that a kicked member can rejoin, a blocked member cannot, and unblock preserves restricted-channel access. Repeat with a staff account and with each bot permission removed in turn.
+
 ### 🎙️ Voice presence and live counters
 
 `/vc` keeps the bot sitting in a voice channel with an optional "Listening to…" status. If it gets disconnected it rejoins with a backoff, gives up after a few tries, and restores whatever activity it had before it joined.

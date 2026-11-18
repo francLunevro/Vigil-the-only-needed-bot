@@ -9,6 +9,8 @@ const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = req
 const { isOwner } = require('../helpers');
 const { sanitizeForEmbed, validateModalInput } = require('../helpers');
 const { logError } = require('../logError');
+const { MUTATIONS } = require('../tempVoiceModeration');
+const { handleModerationButton } = require('./tempVoiceModeration');
 
 // ──────────────────── Panel Buttons ────────────────────
 
@@ -18,6 +20,9 @@ async function handleTempVcButton(interaction, parts) {
     const guild = interaction.guild;
     const member = interaction.member;
     const userId = interaction.user.id;
+    if (MUTATIONS.includes(action) || action === 'blocked' || action === 'page') {
+        return handleModerationButton(interaction, parts);
+    }
 
     if (action === 'create') {
         try {
@@ -93,7 +98,7 @@ async function handleTempVcButton(interaction, parts) {
     if (action === 'claim') {
         const vcId = member.voice && member.voice.channelId;
         const inRow = vcId ? tv.getSpawnedChannel(vcId) : null;
-        if (!inRow) {
+        if (!inRow || inRow.guild_id !== guild.id) {
             return interaction.reply({ content: '❌ You need to be inside a temp voice channel to claim it.', ephemeral: true });
         }
         const ch = guild.channels.cache.get(vcId);
@@ -104,7 +109,8 @@ async function handleTempVcButton(interaction, parts) {
         if (ch.members && ch.members.has(inRow.owner_id)) {
             return interaction.reply({ content: '❌ The owner is still here — no need to claim.', ephemeral: true });
         }
-        tv.addSpawned(vcId, guild.id, userId, inRow.trigger_id);
+        const saved = tv.addSpawned(vcId, guild.id, userId, inRow.trigger_id);
+        if (saved?.error) return interaction.reply({ content: '❌ ' + saved.error, ephemeral: true });
         tv.cancelDeletion(vcId);
         tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         return interaction.reply({ content: '👑 You now own this channel. Use **Rename** / **Lock** / **Delete** to control it.', ephemeral: true });
