@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { RESTJSONErrorCodes } = require('discord.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tvc-test-'));
 process.env.DATA_DIR = tmp;
@@ -439,10 +440,28 @@ test('updatePanels drops rows whose panel message is gone', async () => {
     tv.registerPanel('g1', 'textGone', 'msgGone');
     guild.channels.cache.set('textGone', {
         id: 'textGone',
-        messages: { async fetch() { throw new Error('unknown message'); } },
+        messages: { async fetch() { throw Object.assign(new Error('unknown message'), { code: RESTJSONErrorCodes.UnknownMessage }); } },
     });
     await tv.updatePanels(guild);
     assert.strictEqual(tv.getPanels('g1').length, 0, 'stale panel row removed');
+});
+
+test('startup refresh upgrades existing panels and preserves registrations on transient error', async () => {
+    const edits = [];
+    const guild = makeGuild({ channels: [
+        { id: 'panel', messages: { async fetch() { return { editable: true, async edit(payload) { edits.push(payload); } }; } } },
+        { id: 'pending', messages: { async fetch() { throw new Error('request timed out'); } } },
+    ] });
+    tv.registerPanel(guild.id, 'panel', 'existing-panel');
+    tv.registerPanel(guild.id, 'pending', 'pending-panel');
+    try {
+        await tv.cleanupOrphans({ guilds: { cache: new Map([[guild.id, guild]]) } });
+        assert.strictEqual(edits[0].components[2].toJSON().components[0].label, 'Kick Member');
+        assert.strictEqual(tv.getPanels(guild.id).length, 2);
+    } finally {
+        tv.unregisterPanel('existing-panel');
+        tv.unregisterPanel('pending-panel');
+    }
 });
 
 // ── createForMember (panel button) ──

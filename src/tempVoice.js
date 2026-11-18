@@ -13,7 +13,7 @@
 // the voice presence module. Spawned channels are tracked in the DB so
 // empty orphans can be cleaned up on restart.
 
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionFlagsBits, RESTJSONErrorCodes } = require('discord.js');
 const { getDb } = require('./db');
 const { logError } = require('./logError');
 
@@ -23,6 +23,21 @@ const EMPTY_DELETE_DELAY_MS = 5000;
 
 // channelId -> pending deletion timer
 const deleteTimers = new Map();
+const channelActions = new Set();
+
+async function withChannelAction(channelId, action) {
+    if (channelActions.has(channelId)) {
+        const err = new Error('Another change is in progress for this channel. Try again in a moment.');
+        err.code = 'TEMP_VC_BUSY';
+        throw err;
+    }
+    channelActions.add(channelId);
+    try {
+        return await action();
+    } finally {
+        channelActions.delete(channelId);
+    }
+}
 
 // ──────────────────── Pure helpers ────────────────────
 
@@ -134,7 +149,7 @@ function removeTrigger(guildId, channelId) {
 function getSpawned(guildId) {
     if (!guildId) return [];
     try {
-        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels WHERE guild_id = ? ORDER BY created_at ASC').all(guildId);
+        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels WHERE guild_id = ? AND retiring = 0 ORDER BY created_at ASC').all(guildId);
     } catch (err) {
         logError(err, 'tempvoice', 'getSpawned');
         return [];
@@ -144,7 +159,7 @@ function getSpawned(guildId) {
 function getSpawnedChannel(channelId) {
     if (!channelId) return null;
     try {
-        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels WHERE channel_id = ?').get(channelId) || null;
+        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at, retiring FROM temp_vc_channels WHERE channel_id = ?').get(channelId) || null;
     } catch (err) {
         logError(err, 'tempvoice', 'getSpawnedChannel');
         return null;
@@ -154,7 +169,7 @@ function getSpawnedChannel(channelId) {
 function getSpawnedByOwner(guildId, ownerId) {
     if (!guildId || !ownerId) return null;
     try {
-        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels WHERE guild_id = ? AND owner_id = ? ORDER BY created_at DESC').get(guildId, ownerId) || null;
+        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels WHERE guild_id = ? AND owner_id = ? AND retiring = 0 ORDER BY created_at DESC, rowid DESC').get(guildId, ownerId) || null;
     } catch (err) {
         logError(err, 'tempvoice', 'getSpawnedByOwner');
         return null;
@@ -162,13 +177,59 @@ function getSpawnedByOwner(guildId, ownerId) {
 }
 
 function addSpawned(channelId, guildId, ownerId, triggerId) {
+    if (channelActions.has(channelId)) return { error: 'Another change is in progress. Try again in a moment.' };
     try {
-        getDb().prepare('INSERT OR REPLACE INTO temp_vc_channels (channel_id, guild_id, owner_id, trigger_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        const db = getDb();
+        const current = db.prepare('SELECT guild_id, owner_id FROM temp_vc_channels WHERE channel_id = ?').get(channelId);
+        if (current?.guild_id === guildId && current.owner_id !== ownerId &&
+            db.prepare('SELECT 1 FROM temp_vc_blocks WHERE channel_id = ? AND user_id = ?').get(channelId, ownerId)) {
+            return { error: 'A blocked member cannot claim this channel.' };
+        }
+        // A claim updates the parent row in place so channel-lifetime blocks survive.
+        const result = db.prepare(`
+            INSERT INTO temp_vc_channels (channel_id, guild_id, owner_id, trigger_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET owner_id = excluded.owner_id, retiring = 0
+            WHERE temp_vc_channels.guild_id = excluded.guild_id
+        `)
             .run(channelId, guildId, ownerId, triggerId, Date.now());
+        if (!result.changes) return { error: 'This channel is not in this server.' };
         return { success: true };
     } catch (err) {
         logError(err, 'tempvoice', 'addSpawned');
-        return { error: err.message || 'Failed to save spawned channel' };
+        return { error: 'Could not save temporary voice ownership. Try again shortly.' };
+    }
+}
+
+function deleteRecordOnChannelDelete(channel) {
+    const row = getSpawnedChannel(channel.id);
+    if (!row || row.guild_id !== channel.guild?.id) return;
+    cancelDeletion(channel.id);
+    removeSpawned(channel.id);
+    updatePanels(channel.guild).catch(err => logError(err, 'tempvoice', 'updatePanels'));
+}
+
+function setRetiring(channelId, retiring) {
+    getDb().prepare('UPDATE temp_vc_channels SET retiring = ? WHERE channel_id = ?').run(Number(retiring), channelId);
+}
+
+async function deleteSpawnedChannel(channel, reason) {
+    try {
+        await channel.delete(reason);
+    } catch (err) {
+        if (err.code !== RESTJSONErrorCodes.UnknownChannel) throw err;
+    }
+    removeSpawned(channel.id);
+}
+
+async function findLiveChannel(guild, channelId) {
+    const cached = guild.channels.cache.get(channelId);
+    if (cached || !guild.channels.fetch) return cached;
+    try {
+        return await guild.channels.fetch(channelId);
+    } catch (err) {
+        if (err.code === RESTJSONErrorCodes.UnknownChannel) return null;
+        throw err;
     }
 }
 
@@ -183,7 +244,7 @@ function removeSpawned(channelId) {
 
 function getAllSpawned() {
     try {
-        return getDb().prepare('SELECT channel_id, guild_id, owner_id, trigger_id, created_at FROM temp_vc_channels').all();
+        return getDb().prepare('SELECT channel_id, guild_id, created_at, retiring FROM temp_vc_channels').all();
     } catch (err) {
         logError(err, 'tempvoice', 'getAllSpawned');
         return [];
@@ -244,7 +305,7 @@ async function renderPanels(guild) {
     }
     for (const row of rows) {
         try {
-            const channel = guild.channels && guild.channels.cache ? guild.channels.cache.get(row.channel_id) : null;
+            const channel = await findLiveChannel(guild, row.channel_id);
             if (!channel || !channel.messages) {
                 unregisterPanel(row.message_id);
                 continue;
@@ -252,8 +313,12 @@ async function renderPanels(guild) {
             let msg;
             try {
                 msg = await channel.messages.fetch(row.message_id);
-            } catch {
-                unregisterPanel(row.message_id); // message deleted
+            } catch (err) {
+                if (err.code === RESTJSONErrorCodes.UnknownMessage || err.code === RESTJSONErrorCodes.UnknownChannel) {
+                    unregisterPanel(row.message_id);
+                } else {
+                    logError(err, 'tempvoice', 'fetchPanel_' + row.channel_id);
+                }
                 continue;
             }
             if (!msg || !msg.editable) {
@@ -296,16 +361,19 @@ async function spawnChannel(guild, member, trigger) {
     //     it; let it clean up and spawn a fresh one instead.
     const existing = getSpawnedByOwner(guild.id, member.id);
     if (existing) {
-        const ch = guild.channels && guild.channels.cache ? guild.channels.cache.get(existing.channel_id) : null;
+        const ch = await findLiveChannel(guild, existing.channel_id);
         if (ch) {
             if (ch.members && ch.members.size > 0) {
                 cancelDeletion(existing.channel_id);
                 try { await member.voice.setChannel(ch); } catch { /* fine */ }
                 return ch;
             }
+            // Keep the old parent and its blocks during the deletion grace period.
+            setRetiring(existing.channel_id, true);
             scheduleDeletionIfEmpty(guild, existing.channel_id);
+        } else {
+            removeSpawned(existing.channel_id);
         }
-        removeSpawned(existing.channel_id); // stale/doomed row — clean it up
     }
 
     const count = getSpawned(guild.id).length;
@@ -334,15 +402,15 @@ async function spawnChannel(guild, member, trigger) {
         return null;
     }
 
-    addSpawned(channel.id, guild.id, member.id, trigger.channel_id);
+    const saved = addSpawned(channel.id, guild.id, member.id, trigger.channel_id);
     try {
+        if (saved.error) throw new Error(saved.error);
         await member.voice.setChannel(channel);
     } catch (err) {
         // Couldn't move them in — undo the spawn so we don't leak empty channels.
         logError(err, 'tempvoice', 'move_' + guild.id);
         cancelDeletion(channel.id);
-        removeSpawned(channel.id);
-        channel.delete('Member could not be moved into temp channel').catch((err) => logError(err, 'tempvoice', 'delete_rollback'));
+        deleteSpawnedChannel(channel, 'Member could not be moved into temp channel').catch(err => logError(err, 'tempvoice', 'delete_rollback'));
         updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         return null;
     }
@@ -362,11 +430,7 @@ function cancelDeletion(channelId) {
 // (cancelled if someone joins before the timer fires).
 function scheduleDeletionIfEmpty(guild, channelId) {
     const channel = guild.channels && guild.channels.cache ? guild.channels.cache.get(channelId) : null;
-    if (!channel) {
-        removeSpawned(channelId);
-        return;
-    }
-    if (channel.members && channel.members.size > 0) {
+    if (channel?.members?.size > 0) {
         cancelDeletion(channelId);
         return;
     }
@@ -374,12 +438,14 @@ function scheduleDeletionIfEmpty(guild, channelId) {
 
     const timer = setTimeout(async () => {
         deleteTimers.delete(channelId);
+        if (channelActions.has(channelId)) return scheduleDeletionIfEmpty(guild, channelId);
         try {
-            const ch = guild.channels && guild.channels.cache ? guild.channels.cache.get(channelId) : null;
-            if (!ch) { removeSpawned(channelId); return; }
-            if (ch.members && ch.members.size > 0) return; // someone joined again
-            await ch.delete('Temp voice channel empty');
-            removeSpawned(channelId);
+            await withChannelAction(channelId, async () => {
+                const ch = await findLiveChannel(guild, channelId);
+                if (!ch) { removeSpawned(channelId); return; }
+                if (ch.members && ch.members.size > 0) return; // someone joined again
+                await deleteSpawnedChannel(ch, 'Temp voice channel empty');
+            });
             updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
         } catch (err) {
             logError(err, 'tempvoice', 'delete_' + channelId);
@@ -397,7 +463,7 @@ function getMemberChannelFor(guild, member) {
     const vcId = member.voice && member.voice.channelId;
     if (vcId) {
         const row = getSpawnedChannel(vcId);
-        if (row) {
+        if (row && row.guild_id === guild.id) {
             const channel = guild.channels && guild.channels.cache ? guild.channels.cache.get(vcId) : null;
             if (channel) return { row, channel };
         }
@@ -411,20 +477,24 @@ function getMemberChannelFor(guild, member) {
 }
 
 async function setChannelLocked(channel, guild, member, locked) {
-    const everyone = guild.roles.everyone;
-    if (locked) {
-        await channel.permissionOverwrites.edit(everyone, { Connect: false }, 'Temp VC locked');
-        await channel.permissionOverwrites.edit(member, { Connect: true }, 'Temp VC owner');
-    } else {
-        const eow = channel.permissionOverwrites.cache.get(everyone.id);
-        if (eow && eow.deny.has(PermissionFlagsBits.Connect)) {
-            await channel.permissionOverwrites.delete(everyone, 'Temp VC unlocked');
+    await withChannelAction(channel.id, async () => {
+        const everyone = guild.roles.everyone;
+        const current = guild.channels.fetch ? await guild.channels.fetch(channel.id, { force: true }) : channel;
+        const overwrites = current.permissionOverwrites;
+        if (locked) {
+            await overwrites.edit(everyone, { Connect: false }, { reason: 'Temp VC locked' });
+            await overwrites.edit(member, { Connect: true }, { reason: 'Temp VC owner' });
+        } else {
+            const eow = overwrites.cache.get(everyone.id);
+            if (eow?.deny.has(PermissionFlagsBits.Connect)) {
+                await overwrites.edit(everyone, { Connect: null }, { reason: 'Temp VC unlocked' });
+            }
+            const mow = overwrites.cache.get(member.id);
+            if (mow?.allow.has(PermissionFlagsBits.Connect)) {
+                await overwrites.edit(member, { Connect: null }, { reason: 'Temp VC unlocked' });
+            }
         }
-        const mow = channel.permissionOverwrites.cache.get(member.id);
-        if (mow && mow.allow.has(PermissionFlagsBits.Connect)) {
-            await channel.permissionOverwrites.delete(member, 'Temp VC unlocked');
-        }
-    }
+    });
     updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
 }
 
@@ -464,8 +534,6 @@ async function createForMember(guild, member) {
             try { await member.voice.setChannel(ch); } catch { /* fine */ }
             return { reused: true, channel: ch };
         }
-        if (ch) scheduleDeletionIfEmpty(guild, existing.channel_id);
-        removeSpawned(existing.channel_id);
     }
 
     const channel = await spawnChannel(guild, member, trigger);
@@ -485,16 +553,12 @@ async function deleteOwnedChannel(guild, ownerId) {
         err.code = 'NONE';
         throw err;
     }
-    const channel = guild.channels && guild.channels.cache ? guild.channels.cache.get(existing.channel_id) : null;
-    cancelDeletion(existing.channel_id);
-    removeSpawned(existing.channel_id);
-    if (channel) {
-        try {
-            await channel.delete('Temp VC closed by owner');
-        } catch (err) {
-            logError(err, 'tempvoice', 'ownerDelete_' + existing.channel_id);
-        }
-    }
+    await withChannelAction(existing.channel_id, async () => {
+        const channel = await findLiveChannel(guild, existing.channel_id);
+        if (channel) await deleteSpawnedChannel(channel, 'Temp VC closed by owner');
+        else removeSpawned(existing.channel_id);
+        cancelDeletion(existing.channel_id);
+    });
     updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
     return { success: true };
 }
@@ -513,7 +577,13 @@ function buildPanelComponents() {
         new ButtonBuilder().setCustomId('tvc_claim').setLabel('Claim').setStyle(ButtonStyle.Secondary).setEmoji('👑'),
         new ButtonBuilder().setCustomId('tvc_delete').setLabel('Delete my VC').setStyle(ButtonStyle.Danger).setEmoji('🗑️'),
     );
-    return [row1, row2];
+    const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('tvc_kick').setLabel('Kick Member').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('tvc_block').setLabel('Block Member').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('tvc_unblock').setLabel('Unblock Member').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('tvc_blocked').setLabel('View Blocked Members').setStyle(ButtonStyle.Secondary),
+    );
+    return [row1, row2, row3];
 }
 
 function buildPanelMessage(guild) {
@@ -584,8 +654,10 @@ function handleVoiceStateUpdate(oldState, newState) {
         const leftId = oldState ? oldState.channelId : null;
 
         // 1. Joined a spawned channel → cancel any pending deletion.
-        if (joinedId && getSpawnedChannel(joinedId)) {
+        const joined = joinedId && getSpawnedChannel(joinedId);
+        if (joined?.guild_id === guild.id) {
             cancelDeletion(joinedId);
+            if (joined.retiring) setRetiring(joinedId, false);
         }
 
         // 2. Joined a trigger channel → spawn a new channel for them.
@@ -616,18 +688,27 @@ async function cleanupOrphans(client) {
     for (const row of rows) {
         const guild = client.guilds.cache.get(row.guild_id);
         if (!guild) { removeSpawned(row.channel_id); continue; }
-        const channel = guild.channels && guild.channels.cache ? guild.channels.cache.get(row.channel_id) : null;
-        if (!channel) { removeSpawned(row.channel_id); continue; }
-        // Channels spawned within the last minute are left alone — voice states
-        // may not be fully synced yet, and an occupied channel must not be
-        // deleted just because the client hasn't cached its members yet.
-        if (row.created_at > now - 60000) continue;
-        if (channel.members && channel.members.size === 0) {
-            try {
-                await channel.delete('Temp voice channel empty (restart cleanup)');
-            } catch { /* already gone / no perms — row cleanup below handles it */ }
-            removeSpawned(row.channel_id);
+        if (guild.available === false) continue;
+        try {
+            await withChannelAction(row.channel_id, async () => {
+                const channel = await findLiveChannel(guild, row.channel_id);
+                if (!channel) { removeSpawned(row.channel_id); return; }
+                // A fresh channel may still be waiting for voice-state sync.
+                if (row.created_at <= now - 60000 && channel.members?.size === 0) {
+                    await deleteSpawnedChannel(channel, 'Temp voice channel empty (restart cleanup)');
+                } else if (row.retiring && channel.members?.size > 0) {
+                    setRetiring(row.channel_id, false);
+                }
+            });
+        } catch (err) {
+            if (err.code !== 'TEMP_VC_BUSY') logError(err, 'tempvoice', 'orphan_delete_' + row.channel_id);
         }
+    }
+    // Refresh the persistent messages once so existing panels gain new buttons.
+    const panels = getDb().prepare('SELECT DISTINCT guild_id FROM temp_vc_panels').all();
+    for (const { guild_id } of panels) {
+        const guild = client.guilds.cache.get(guild_id);
+        if (guild && guild.available !== false) await updatePanels(guild);
     }
 }
 
@@ -653,6 +734,8 @@ module.exports = {
     getSpawnedByOwner,
     addSpawned,
     removeSpawned,
+    deleteRecordOnChannelDelete,
+    withChannelAction,
     registerPanel,
     getPanels,
     unregisterPanel,

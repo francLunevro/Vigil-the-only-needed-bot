@@ -7,6 +7,8 @@ const { isOwner } = require('../helpers');
 const { hasPermission } = require('../permissions');
 const tv = require('../tempVoice');
 const { logError } = require('../logError');
+const { MUTATIONS } = require('../tempVoiceModeration');
+const { executeModeration } = require('../interactions/tempVoiceModeration');
 
 function canAdmin(interaction) {
     return isOwner(interaction.user.id) || hasPermission(interaction.guild.id, 'tempvc', interaction.user.id);
@@ -15,6 +17,9 @@ function canAdmin(interaction) {
 async function executeTempVoice(interaction) {
     const sub = interaction.options.getSubcommand();
     const guild = interaction.guild;
+
+    if (MUTATIONS.includes(sub)) return executeModeration(interaction, sub, interaction.options.getUser('user', true).id);
+    if (sub === 'blocked') return executeModeration(interaction, sub);
 
     // ── Admin subcommands ──
     if (sub === 'set' || sub === 'unset' || sub === 'name' || sub === 'list' || sub === 'panel') {
@@ -93,7 +98,7 @@ async function executeTempVoice(interaction) {
         const spawnedLines = [];
         for (const s of spawned) {
             const ch = guild.channels.cache.get(s.channel_id);
-            if (!ch) { tv.removeSpawned(s.channel_id); continue; }
+            if (!ch) continue;
             const owner = guild.members.cache.get(s.owner_id);
             spawnedLines.push('• <#' + s.channel_id + '> → owned by ' + (owner ? String(owner.user) : '`' + s.owner_id + '`') + (ch.members && ch.members.size ? ' (' + ch.members.size + ' in it)' : ' (empty)'));
         }
@@ -157,7 +162,7 @@ async function executeTempVoice(interaction) {
         return interaction.reply({ content: '❌ You need to be inside a temp voice channel to claim it.', ephemeral: true });
     }
     const row = tv.getSpawnedChannel(vcId);
-    if (!row) {
+    if (!row || row.guild_id !== guild.id) {
         return interaction.reply({ content: '❌ This isn\'t a temp voice channel.', ephemeral: true });
     }
     const channel = guild.channels.cache.get(vcId);
@@ -166,7 +171,8 @@ async function executeTempVoice(interaction) {
     if (channel && channel.members && channel.members.has(row.owner_id)) {
         return interaction.reply({ content: '❌ The owner is still here — no need to claim.', ephemeral: true });
     }
-    tv.addSpawned(vcId, guild.id, interaction.user.id, row.trigger_id);
+    const saved = tv.addSpawned(vcId, guild.id, interaction.user.id, row.trigger_id);
+    if (saved.error) return interaction.reply({ content: '❌ ' + saved.error, ephemeral: true });
     tv.cancelDeletion(vcId);
     tv.updatePanels(guild).catch((err) => logError(err, 'tempvoice', 'updatePanels'));
     return interaction.reply({ content: '👑 You now own this channel. You can `/tempvc rename`, `/tempvc limit`, `/tempvc lock` it.', ephemeral: true });

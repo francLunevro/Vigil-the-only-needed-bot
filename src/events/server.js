@@ -82,6 +82,7 @@ module.exports = [
             try {
                 require('../tickets').handleTicketChannelDeleted(channel);
             } catch (err) { logError(err, 'events/server', 'channelDelete-ticket'); }
+            if (channel.type === 2) require('../tempVoice').deleteRecordOnChannelDelete(channel);
             const typeName = CHANNEL_TYPE_NAMES[channel.type] || 'Unknown';
             const executor = await deps.fetchAuditLogExecutor(channel.guild, 12, channel.id).catch(() => null);
             const byUser = executor ? ' by ' + String(executor) : '';
@@ -108,6 +109,11 @@ module.exports = [
         once: false,
         execute: (deps) => async (oldChannel, newChannel) => {
             if (!newChannel.guild) return;
+            if (newChannel.type === 2) {
+                try {
+                    require('../tempVoiceModeration').observePermissionChanges(oldChannel, newChannel);
+                } catch (err) { logError(err, 'events/server', 'channelUpdate-tempVoice'); }
+            }
 
             const changes = [];
 
